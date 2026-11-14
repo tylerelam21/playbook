@@ -6,7 +6,7 @@ import { exportPdf, exportPptx, exportPlan } from '../export/exportCards';
 import { clampToField } from '../model/field';
 import { I } from './Icons';
 
-function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className={`modal${wide ? ' wide' : ''}`} onMouseDown={(e) => e.stopPropagation()}>

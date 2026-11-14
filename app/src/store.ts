@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { produce, type Draft } from 'immer';
-import type { Card, Ink, PathPurpose, Side, ThemeId, Workspace, Ruleset, PlayPath } from './model/types';
+import type { Card, Ink, Look, PathPurpose, Side, ThemeId, Workspace, Ruleset, PlayPath } from './model/types';
+import { applyVersionTo, latest, versionFromCard } from './model/looks';
 import { blankCard, id, seedPacket } from './model/samples';
 
 export type Tool = 'select' | 'path' | 'offense' | 'defense' | 'note';
@@ -21,6 +22,13 @@ export const PATH_PRESETS: PathPreset[] = [
   { key: 'other', name: 'Read / key', hint: 'Dashed', style: { line: 'dashed', end: 'none', ink: 'ink', curved: false } },
 ];
 
+export type Modal =
+  | { type: 'import' }
+  | { type: 'export' }
+  | { type: 'saveLook'; side: Side; name: string }
+  | { type: 'applyLook'; lookId: string; cardIds: string[]; title: string; alias?: string }
+  | null;
+
 export interface Toast {
   id: string;
   text: string;
@@ -29,6 +37,7 @@ export interface Toast {
 
 interface Snapshot {
   cards: Card[];
+  looks: Look[];
   activeId: string;
 }
 
@@ -40,6 +49,7 @@ interface Layer {
 export interface State {
   workspace: Workspace;
   cards: Card[];
+  looks: Look[];
   activeId: string;
   selection: string[];
   tool: Tool;
@@ -50,6 +60,10 @@ export interface State {
   toasts: Toast[];
   savedAt: number;
   zoom: number;
+  modal: Modal;
+  sideTab: 'cards' | 'looks';
+  setModal: (m: Modal) => void;
+  setSideTab: (t: 'cards' | 'looks') => void;
 
   // Record an undo step, then change the cards. Semantic edits on a Ready card
   // return it to Draft.
@@ -77,17 +91,25 @@ export interface State {
   moveCard: (from: number, to: number) => void;
   insertCards: (cards: Card[]) => void;
 
+  // Saved team looks
+  saveLook: (side: Side, name: string, aliases?: string[]) => Look | null;
+  saveLookVersion: (lookId: string) => void; // from the active card
+  applyLook: (lookId: string, cardIds: string[], v?: number) => void;
+  updateLook: (lookId: string, patch: { name?: string; aliases?: string[] }) => void;
+  deleteLook: (lookId: string) => void;
+  restoreLookVersion: (lookId: string, v: number) => void;
+
   toast: (text: string, tone?: Toast['tone']) => void;
 }
 
 const STORAGE_KEY = 'playbook.v1';
 
-function load(): Pick<State, 'workspace' | 'cards' | 'activeId'> {
+function load(): Pick<State, 'workspace' | 'cards' | 'looks' | 'activeId'> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const data = JSON.parse(raw);
-      if (Array.isArray(data.cards) && data.cards.length) return data;
+      if (Array.isArray(data.cards) && data.cards.length) return { looks: [], ...data };
     }
   } catch {
     /* fall through to a fresh sample packet */
@@ -96,6 +118,7 @@ function load(): Pick<State, 'workspace' | 'cards' | 'activeId'> {
   return {
     workspace: { packetName: 'Wednesday scout · sample', ruleset: 'college', orientation: 'defense-view', theme: 'print' },
     cards,
+    looks: [],
     activeId: cards[0].id,
   };
 }
@@ -105,7 +128,7 @@ const HISTORY_LIMIT = 200;
 let gestureDirty = false;
 
 export const useStore = create<State>((set, get) => {
-  const snap = (): Snapshot => ({ cards: get().cards, activeId: get().activeId });
+  const snap = (): Snapshot => ({ cards: get().cards, looks: get().looks, activeId: get().activeId });
 
   const applyTo = (
     cards: Card[],
@@ -141,6 +164,10 @@ export const useStore = create<State>((set, get) => {
     toasts: [],
     savedAt: Date.now(),
     zoom: 1,
+    modal: null,
+    sideTab: 'cards',
+    setModal: (modal) => set({ modal }),
+    setSideTab: (sideTab) => set({ sideTab }),
 
     commit: (fn, opts) => {
       const { cards, activeId } = get();
@@ -257,6 +284,92 @@ export const useStore = create<State>((set, get) => {
       }));
     },
 
+    saveLook: (side, name, aliases = []) => {
+      const { cards, activeId, looks } = get();
+      const card = cards.find((c) => c.id === activeId);
+      const clean = name.trim();
+      if (!card || !clean) return null;
+      if (!card.players.some((p) => p.side === side)) {
+        get().toast(`This card has no ${side === 'O' ? 'offensive players' : 'defenders'} to save.`, 'warn');
+        return null;
+      }
+      const version = versionFromCard(card, side, 1);
+      const look: Look = { id: id(), side, name: clean, aliases, versions: [version], createdAt: Date.now() };
+      // Link this card to the new look (not a semantic change: the drawing is the same).
+      const nextCards = produce(cards, (draft) => {
+        const c = draft.find((x) => x.id === activeId)!;
+        applyVersionTo(c, look, version);
+      });
+      set((s) => ({ looks: [...looks, look], cards: nextCards, past: [...s.past, snap()].slice(-HISTORY_LIMIT), future: [] }));
+      return look;
+    },
+
+    saveLookVersion: (lookId) => {
+      const { cards, activeId, looks } = get();
+      const card = cards.find((c) => c.id === activeId);
+      const look = looks.find((l) => l.id === lookId);
+      if (!card || !look) return;
+      const version = versionFromCard(card, look.side, latest(look).v + 1);
+      const updated = { ...look, versions: [...look.versions, version] };
+      const nextCards = produce(cards, (draft) => {
+        const c = draft.find((x) => x.id === activeId)!;
+        applyVersionTo(c, updated, version);
+      });
+      set((s) => ({
+        looks: looks.map((l) => (l.id === lookId ? updated : l)),
+        cards: nextCards,
+        past: [...s.past, snap()].slice(-HISTORY_LIMIT),
+        future: [],
+      }));
+    },
+
+    applyLook: (lookId, cardIds, v) => {
+      const look = get().looks.find((l) => l.id === lookId);
+      if (!look || !cardIds.length) return;
+      const version = (v ? look.versions.find((x) => x.v === v) : undefined) ?? latest(look);
+      const ids = new Set(cardIds);
+      let demoted = 0;
+      const nextCards = produce(get().cards, (draft) => {
+        for (const c of draft) {
+          if (!ids.has(c.id)) continue;
+          applyVersionTo(c, look, version);
+          c.version += 1;
+          c.updatedAt = Date.now();
+          if (c.status === 'ready') {
+            c.status = 'draft';
+            demoted++;
+          }
+        }
+      });
+      set((s) => ({ cards: nextCards, past: [...s.past, snap()].slice(-HISTORY_LIMIT), future: [] }));
+      if (demoted) get().toast(`${demoted} Ready card${demoted > 1 ? 's' : ''} changed — back to Draft for review.`, 'warn');
+    },
+
+    updateLook: (lookId, patch) =>
+      set((s) => ({
+        looks: s.looks.map((l) => (l.id === lookId ? { ...l, ...patch } : l)),
+        past: [...s.past, snap()].slice(-HISTORY_LIMIT),
+        future: [],
+      })),
+
+    deleteLook: (lookId) => {
+      set((s) => ({ looks: s.looks.filter((l) => l.id !== lookId), past: [...s.past, snap()].slice(-HISTORY_LIMIT), future: [] }));
+      get().toast('Look deleted. Cards that used it keep their drawing. ⌘Z to undo.', 'info');
+    },
+
+    restoreLookVersion: (lookId, v) => {
+      const look = get().looks.find((l) => l.id === lookId);
+      const old = look?.versions.find((x) => x.v === v);
+      if (!look || !old) return;
+      const restored = { ...structuredClone(old), v: latest(look).v + 1, savedAt: Date.now() };
+      set((s) => ({
+        looks: s.looks.map((l) => (l.id === lookId ? { ...l, versions: [...l.versions, restored] } : l)),
+        past: [...s.past, snap()].slice(-HISTORY_LIMIT),
+        future: [],
+      }));
+      get().toast(`Restored v${v} as v${restored.v}. Cards aren’t changed until you update them.`, 'good');
+    },
+
     toast: (text, tone = 'info') => {
       const t = { id: id(), text, tone };
       set((s) => ({ toasts: [...s.toasts.slice(-3), t] }));
@@ -268,12 +381,12 @@ export const useStore = create<State>((set, get) => {
 // Autosave (debounced) to this browser.
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 useStore.subscribe((s, prev) => {
-  if (s.cards === prev.cards && s.workspace === prev.workspace && s.activeId === prev.activeId) return;
+  if (s.cards === prev.cards && s.looks === prev.looks && s.workspace === prev.workspace && s.activeId === prev.activeId) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { workspace, cards, activeId } = useStore.getState();
+    const { workspace, cards, looks, activeId } = useStore.getState();
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ workspace, cards, activeId }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ workspace, cards, looks, activeId }));
       useStore.setState({ savedAt: Date.now() });
     } catch {
       /* storage unavailable (private mode, sandboxed frame) — keep working in memory */

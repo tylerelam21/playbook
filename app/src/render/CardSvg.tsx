@@ -15,6 +15,7 @@ export interface CardSvgProps {
   hidden?: Partial<Record<Side, boolean>>;
   watermark?: string;
   footer?: string;
+  bare?: boolean; // field only, no header (look thumbnails)
   className?: string;
   svgRef?: React.Ref<SVGSVGElement>;
 }
@@ -256,7 +257,7 @@ function Header({ card, theme }: { card: Card; theme: Theme }) {
   );
 }
 
-function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = [], hidden = {}, watermark, footer, className, svgRef }: CardSvgProps) {
+function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = [], hidden = {}, watermark, footer, bare, className, svgRef }: CardSvgProps) {
   const f = makeFrame(card.hash, ruleset);
   const byId = new Map(card.players.map((p) => [p.id, p]));
   const sel = new Set(selection);
@@ -270,13 +271,13 @@ function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = []
     <svg
       ref={svgRef}
       className={className}
-      viewBox={`0 0 ${CARD_W} ${CARD_H}`}
-      width={CARD_W}
-      height={CARD_H}
+      viewBox={bare ? `${FIELD.x - 4} ${FIELD.y - 4} ${FIELD.w + 8} ${FIELD.h + 8}` : `0 0 ${CARD_W} ${CARD_H}`}
+      width={bare ? FIELD.w + 8 : CARD_W}
+      height={bare ? FIELD.h + 8 : CARD_H}
       xmlns="http://www.w3.org/2000/svg"
     >
       <rect x={0} y={0} width={CARD_W} height={CARD_H} fill={theme.paper} data-kind={interactive ? 'paper' : undefined} />
-      <Header card={card} theme={theme} />
+      {!bare && <Header card={card} theme={theme} />}
       <Field f={f} theme={theme} ruleset={ruleset} />
       {interactive && (
         <line

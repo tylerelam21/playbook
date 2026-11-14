@@ -5,6 +5,7 @@ import { clampToField, fieldLimits, describeSpot } from '../model/field';
 import type { Card, CardStatus, EndCap, Hash, Ink, LineStyle, Note, PathPurpose, PlayPath, Player, PlayerShape } from '../model/types';
 import { INK_ORDER, THEMES } from '../render/themes';
 import { I } from './Icons';
+import { SIDE_NAME, latest, sideState } from '../model/looks';
 import { STATUS_LABEL } from './Sidebar';
 
 function Seg<T extends string>({ value, options, onChange }: { value: T; options: { v: T; label: React.ReactNode; title?: string }[]; onChange: (v: T) => void }) {
@@ -143,6 +144,7 @@ function CardPanel({ card }: { card: Card }) {
       c.players = [...c.players.filter((p) => p.side !== side), ...fresh];
       c.paths = c.paths.filter((p) => !(p.ownerId && gone.has(p.ownerId)));
       for (const n of c.notes) if (n.anchorId && gone.has(n.anchorId)) n.anchorId = null;
+      if (c.looks) delete c.looks[side];
     });
     toast(`Applied sample “${look.name}”. ⌘Z to undo.`, 'good');
   };
@@ -155,11 +157,6 @@ function CardPanel({ card }: { card: Card }) {
       c.status = 'review';
     });
     toast('Flipped the drawing. Play and defense calls weren’t renamed — card marked Needs review.', 'warn');
-  };
-
-  const counts = {
-    O: card.players.filter((p) => p.side === 'O').length,
-    D: card.players.filter((p) => p.side === 'D').length,
   };
 
   return (
@@ -209,28 +206,9 @@ function CardPanel({ card }: { card: Card }) {
       </div>
       <p className="muted small">Any change to the drawing or calls sends a Ready card back to Draft.</p>
 
-      <div className="panel-title">
-        Starting looks <span className="tag">Sample</span>
-      </div>
-      <p className="muted small">Generic placements to start from. Replaces that side’s players.</p>
-      <div className="grid2">
-        <select value="" onChange={(e) => applyLook('O', e.target.value)}>
-          <option value="">Offense… ({counts.O})</option>
-          {OFFENSE_LOOKS.map((l) => (
-            <option key={l.key} value={l.key}>
-              {l.name}
-            </option>
-          ))}
-        </select>
-        <select value="" onChange={(e) => applyLook('D', e.target.value)}>
-          <option value="">Defense… ({counts.D})</option>
-          {DEFENSE_LOOKS.map((l) => (
-            <option key={l.key} value={l.key}>
-              {l.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <div className="panel-title">Looks on this card</div>
+      <LookSlot card={card} side="D" onSample={(k) => applyLook('D', k)} />
+      <LookSlot card={card} side="O" onSample={(k) => applyLook('O', k)} />
 
       <div className="panel-title">Actions</div>
       <div className="stack">
@@ -487,6 +465,133 @@ function MultiPanel({ count, players }: { count: number; players: Player[] }) {
           Line up at same depth
         </button>
       )}
+    </div>
+  );
+}
+
+// ---- Saved team look for one side of the card -------------------------------
+
+function LookSlot({ card, side, onSample }: { card: Card; side: 'O' | 'D'; onSample: (key: string) => void }) {
+  const { looks, applyLook, saveLookVersion, setModal, toast } = useStore();
+  const st = sideState(card, side, looks);
+  const saved = looks.filter((l) => l.side === side);
+  const samples = side === 'O' ? OFFENSE_LOOKS : DEFENSE_LOOKS;
+  const hasPlayers = card.players.some((p) => p.side === side);
+  const word = side === 'O' ? 'formation' : 'defense';
+  const suggestedName = st.kind === 'unknown' ? st.call : side === 'D' ? card.defense.trim() : card.play.trim().split(/\s+/)[0] ?? '';
+
+  const choose = (v: string) => {
+    if (!v) return;
+    if (v.startsWith('sample:')) return onSample(v.slice(7));
+    const look = looks.find((l) => l.id === v);
+    applyLook(v, [card.id]);
+    if (look) toast(`Applied “${look.name}”. ⌘Z to undo.`, 'good');
+  };
+
+  const updateOthers = (lookId: string) => {
+    // A changed look lists the other cards built from an older version.
+    const s = useStore.getState();
+    const look = s.looks.find((l) => l.id === lookId);
+    if (!look) return;
+    const others = s.cards.filter((c) => c.id !== card.id && c.looks?.[side]?.lookId === lookId && c.looks[side]!.v < latest(look).v);
+    if (others.length)
+      setModal({ type: 'applyLook', lookId, cardIds: others.map((c) => c.id), title: `“${look.name}” is now v${latest(look).v}. Update other cards?` });
+    else toast(`Saved “${look.name}” v${latest(look).v}.`, 'good');
+  };
+
+  let status: React.ReactNode;
+  let actions: React.ReactNode = null;
+  switch (st.kind) {
+    case 'applied':
+      status = (
+        <>
+          <span className="slot-name">{st.look.name}</span>
+          <span className="tag">v{st.v}</span>
+          {st.edited && <span className="chip warn">edited on this card</span>}
+          {!st.edited && st.outdated && <span className="chip">v{latest(st.look).v} available</span>}
+        </>
+      );
+      actions = st.edited ? (
+        <>
+          <button
+            className="btn"
+            onClick={() => {
+              saveLookVersion(st.look.id);
+              updateOthers(st.look.id);
+            }}
+            title="Make this drawing the saved version everyone uses"
+          >
+            Save as v{latest(st.look).v + 1}
+          </button>
+          <button className="btn" onClick={() => applyLook(st.look.id, [card.id], st.v)} title={`Undo card-only changes (back to v${st.v})`}>
+            Revert
+          </button>
+        </>
+      ) : st.outdated ? (
+        <button className="btn" onClick={() => applyLook(st.look.id, [card.id])}>
+          Update to v{latest(st.look).v}
+        </button>
+      ) : null;
+      break;
+    case 'deleted':
+      status = <span className="muted">From a deleted look (v{st.v})</span>;
+      break;
+    case 'matched':
+      status = (
+        <>
+          <span className="muted">Call matches</span> <span className="slot-name">{st.look.name}</span>
+        </>
+      );
+      actions = (
+        <button className="btn primary" onClick={() => choose(st.look.id)}>
+          Apply saved {word}
+        </button>
+      );
+      break;
+    case 'unknown':
+      status = (
+        <>
+          <span className="chip warn">not saved</span> <span className="slot-name">{st.call}</span>
+        </>
+      );
+      break;
+    case 'none':
+      status = <span className="muted">{hasPlayers ? 'Drawn on this card only' : `No ${word} yet`}</span>;
+  }
+
+  return (
+    <div className="look-slot">
+      <div className="slot-head">
+        <span className="slot-side">{SIDE_NAME[side]}</span>
+        <span className="slot-status">{status}</span>
+      </div>
+      {actions && <div className="slot-actions">{actions}</div>}
+      <div className="slot-actions">
+        <select value="" onChange={(e) => choose(e.target.value)}>
+          <option value="">Use a look…</option>
+          {saved.length > 0 && (
+            <optgroup label="Team looks">
+              {saved.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label="Samples (generic)">
+            {samples.map((l) => (
+              <option key={l.key} value={`sample:${l.key}`}>
+                {l.name}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+        {hasPlayers && st.kind !== 'applied' && (
+          <button className="btn" onClick={() => setModal({ type: 'saveLook', side, name: suggestedName })}>
+            Save as team look
+          </button>
+        )}
+      </div>
     </div>
   );
 }

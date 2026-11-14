@@ -79,6 +79,33 @@ export interface Card {
   notes: Note[];
   version: number;
   updatedAt: number;
+  // Which saved look each side was copied from, if any.
+  looks?: Partial<Record<Side, LookRef>>;
+}
+
+export interface LookRef {
+  lookId: string;
+  v: number; // look version this card was built from
+  sig: string; // drawing fingerprint at apply time, to detect card-only edits
+}
+
+// One saved version of a team look. Never changed after it is saved.
+export interface LookVersion {
+  v: number;
+  players: Player[];
+  paths: PlayPath[];
+  notes: Note[];
+  savedAt: number;
+  fromCard: string; // play # it was saved from
+}
+
+export interface Look {
+  id: string;
+  side: Side;
+  name: string; // matched against the script's call text
+  aliases: string[];
+  versions: LookVersion[];
+  createdAt: number;
 }
 
 export type Ruleset = 'hs' | 'college' | 'nfl';
