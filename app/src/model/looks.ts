@@ -71,6 +71,7 @@ export function versionFromCard(card: Card, side: Side, v: number): LookVersion 
 export function applyVersionTo(card: Draft<Card> | Card, look: Look, version: LookVersion) {
   const side = look.side;
   const gone = new Set(card.players.filter((p) => p.side === side).map((p) => p.id));
+  const goneLabels = new Map(card.players.filter((p) => p.side === side).map((p) => [p.id, p.label]));
   const map = new Map<string, string>();
   const players = version.players.map((p) => {
     const nid = id();
@@ -83,6 +84,15 @@ export function applyVersionTo(card: Draft<Card> | Card, look: Look, version: Lo
   card.paths = [...card.paths.filter((p) => !(p.ownerId && gone.has(p.ownerId))), ...paths];
   card.notes = [...card.notes.filter((n) => !(n.anchorId && gone.has(n.anchorId))), ...notes];
   for (const n of card.notes) if (n.anchorId && gone.has(n.anchorId)) n.anchorId = null;
+  // Install assignments follow the new player with the same label (if exactly
+  // one); otherwise they stay unlinked and the card flags them.
+  for (const as of card.teaching?.assignments ?? []) {
+    if (!as.playerId || !gone.has(as.playerId)) continue;
+    const label = goneLabels.get(as.playerId) || as.label;
+    const matches = players.filter((p) => p.label && p.label === label);
+    as.playerId = matches.length === 1 ? matches[0].id : null;
+    if (!as.playerId) as.label = label;
+  }
   card.looks = { ...(card.looks ?? {}), [side]: { lookId: look.id, v: version.v, sig: signature({ players, paths, notes }) } };
 }
 

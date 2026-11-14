@@ -8,8 +8,18 @@ import '@fontsource/inter/latin-600.css';
 import './index.css';
 import App from './App';
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+// Install-card notes are wrapped by measuring text, so wait (briefly) for the
+// card font before the first render.
+const fontsLoaded = Promise.all([
+  document.fonts.load("600 15px 'Barlow Condensed'"),
+  document.fonts.load("700 15px 'Barlow Condensed'"),
+]);
+const timeout = new Promise((r) => setTimeout(r, 1500));
+
+Promise.race([fontsLoaded, timeout]).finally(() =>
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  ),
 );

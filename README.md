@@ -18,4 +18,6 @@ npm run dev
 
 Saved team looks: save a card's defense or formation once and reuse it. Defense calls match a look's name or aliases exactly; play calls match the longest look name they start with. Cards copy a look version, so changing a look never rewrites a card silently; the Looks tab lists undefined calls and cards on older versions.
 
+Install cards: switch a card to Install to add player assignments and coaching points under the field. Notes print at a fixed size; anything that doesn't fit continues on extra pages (PDF and PowerPoint) instead of shrinking. Players can carry a read-order number.
+
 Cards and looks save to browser storage for now.

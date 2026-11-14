@@ -25,6 +25,7 @@ export interface Player {
   x: number;
   y: number;
   ink?: Ink; // optional emphasis; color never carries meaning on its own
+  read?: number; // read order (1st, 2nd…) shown as a numbered badge
 }
 
 export type PathPurpose = 'route' | 'rush' | 'drop' | 'motion' | 'block' | 'other';
@@ -81,6 +82,25 @@ export interface Card {
   updatedAt: number;
   // Which saved look each side was copied from, if any.
   looks?: Partial<Record<Side, LookRef>>;
+  mode?: CardMode; // default 'scout'
+  teaching?: Teaching; // install cards
+}
+
+export type CardMode = 'scout' | 'install';
+
+// One player's job on an install card. Linked to the player by id so the
+// label printed stays in sync; `label` is kept as a fallback if the player is
+// removed (the card then flags it).
+export interface Assignment {
+  id: string;
+  playerId: string | null;
+  label: string;
+  text: string;
+}
+
+export interface Teaching {
+  assignments: Assignment[];
+  cues: string; // coaching points, one per line
 }
 
 export interface LookRef {

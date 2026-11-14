@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { activeCard, PATH_PRESETS, useStore } from '../store';
 import { DEFENSE_LOOKS, OFFENSE_LOOKS } from '../model/samples';
 import { clampToField, fieldLimits, describeSpot } from '../model/field';
-import type { Card, CardStatus, EndCap, Hash, Ink, LineStyle, Note, PathPurpose, PlayPath, Player, PlayerShape } from '../model/types';
+import type { Card, CardMode, CardStatus, EndCap, Hash, Ink, LineStyle, Note, PathPurpose, PlayPath, Player, PlayerShape } from '../model/types';
+import { assignmentLabel, layoutTeaching } from '../render/teachingLayout';
+import { id as newId } from '../model/samples';
 import { INK_ORDER, THEMES } from '../render/themes';
 import { I } from './Icons';
 import { SIDE_NAME, latest, sideState } from '../model/looks';
@@ -188,6 +190,23 @@ function CardPanel({ card }: { card: Card }) {
         />
       </Field>
 
+      <Field label="Card type">
+        <Seg<CardMode>
+          value={card.mode ?? 'scout'}
+          onChange={(m) =>
+            edit((_, c) => {
+              c.mode = m;
+              if (m === 'install' && !c.teaching) c.teaching = { assignments: [], cues: '' };
+            })
+          }
+          options={[
+            { v: 'scout', label: 'Scout', title: 'Field only, like your current cards' },
+            { v: 'install', label: 'Install', title: 'Adds assignments and coaching points under the field' },
+          ]}
+        />
+      </Field>
+      {card.mode === 'install' && <TeachingSection card={card} />}
+
       <div className="panel-title">Status</div>
       <div className={`status-row${justReady ? ' celebrate' : ''}`}>
         <Seg<CardStatus>
@@ -310,6 +329,14 @@ function PlayerPanel({ p, card }: { p: Player; card: Card }) {
       <div className="panel-title">Color</div>
       <Inks value={p.ink} onChange={(v) => update((x) => (x.ink = v))} />
       <p className="muted small">Color is for readability only — it doesn’t change meaning.</p>
+
+      <div className="panel-title">Read order</div>
+      <Seg<string>
+        value={String(p.read ?? 0)}
+        onChange={(v) => update((x) => (x.read = Number(v) || undefined))}
+        options={['0', '1', '2', '3', '4', '5'].map((v) => ({ v, label: v === '0' ? 'None' : v, title: v === '0' ? 'No read number' : `Read ${v}` }))}
+      />
+      {card.mode === 'install' && <PlayerAssignment p={p} card={card} />}
 
       <div className="panel-title">Paths</div>
       <p className="muted small">{owned ? `${owned} path${owned > 1 ? 's' : ''} attached.` : 'No path yet.'}</p>
@@ -593,5 +620,113 @@ function LookSlot({ card, side, onSample }: { card: Card; side: 'O' | 'D'; onSam
         )}
       </div>
     </div>
+  );
+}
+
+// ---- Install card teaching notes --------------------------------------------
+
+function TeachingSection({ card }: { card: Card }) {
+  const t = card.teaching ?? { assignments: [], cues: '' };
+  const layout = layoutTeaching(card);
+  const assigned = new Set(t.assignments.map((a) => a.playerId));
+  const playerName = (p: Player) => `${p.side === 'O' ? 'Off' : 'Def'} · ${p.label || p.shape}`;
+  const open = card.players.filter((p) => !assigned.has(p.id));
+  const orphans = t.assignments.filter((a) => assignmentLabel(card, a.playerId, a.label).orphan || !a.playerId).length;
+
+  const editT = (fn: (a: NonNullable<Card['teaching']>) => void) =>
+    edit((_, c) => {
+      if (!c.teaching) c.teaching = { assignments: [], cues: '' };
+      fn(c.teaching);
+    });
+  const addFor = (players: Player[]) =>
+    editT((tt) => {
+      for (const p of players) tt.assignments.push({ id: newId(), playerId: p.id, label: p.label, text: '' });
+    });
+
+  return (
+    <>
+      <div className="panel-title">
+        Teaching
+        <span className={`tag${layout.totalPages > 1 ? ' warn' : ''}`}>{layout.totalPages > 1 ? `${layout.totalPages} pages` : 'fits on card'}</span>
+      </div>
+      {layout.totalPages > 1 && (
+        <p className="muted small">Extra notes continue on page 2 at the same size — text is never shrunk to fit.</p>
+      )}
+      {orphans > 0 && <div className="omitted small">{orphans} assignment{orphans > 1 ? 's aren’t' : ' isn’t'} linked to a player on this card. Pick the player or remove the row.</div>}
+      <div className="assign-list">
+        {t.assignments.map((a, i) => {
+          const { label, orphan } = assignmentLabel(card, a.playerId, a.label);
+          return (
+            <div key={a.id} className={`assign-row${orphan || !a.playerId ? ' orphan' : ''}`}>
+              <div className="assign-top">
+                <select
+                  value={a.playerId && !orphan ? a.playerId : ''}
+                  onChange={(e) =>
+                    editT((tt) => {
+                      const p = card.players.find((x) => x.id === e.target.value);
+                      tt.assignments[i].playerId = p?.id ?? null;
+                      if (p) tt.assignments[i].label = p.label;
+                    })
+                  }
+                >
+                  {(!a.playerId || orphan) && <option value="">{label} (not on card)</option>}
+                  {card.players.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {playerName(p)}
+                    </option>
+                  ))}
+                </select>
+                <button className="mini" title="Remove" onClick={() => editT((tt) => tt.assignments.splice(i, 1))}>
+                  {I.trash()}
+                </button>
+              </div>
+              <TextIn area value={a.text} placeholder={`What ${label} does`} onCommit={(v) => editT((tt) => (tt.assignments[i].text = v))} />
+            </div>
+          );
+        })}
+      </div>
+      <select value="" onChange={(e) => addFor(card.players.filter((p) => p.id === e.target.value))}>
+        <option value="">Add an assignment for…</option>
+        {open.map((p) => (
+          <option key={p.id} value={p.id}>
+            {playerName(p)}
+          </option>
+        ))}
+      </select>
+      <div className="grid2">
+        <button className="btn" disabled={!open.some((p) => p.side === 'O')} onClick={() => addFor(open.filter((p) => p.side === 'O'))}>
+          Rows for offense
+        </button>
+        <button className="btn" disabled={!open.some((p) => p.side === 'D')} onClick={() => addFor(open.filter((p) => p.side === 'D'))}>
+          Rows for defense
+        </button>
+      </div>
+      <p className="muted small">Empty rows don’t print, so add only the players this install needs.</p>
+      <Field label="Coaching points (one per line)">
+        <TextIn area value={t.cues} placeholder={'Eyes to #3\nSqueeze the B gap'} onCommit={(v) => editT((tt) => (tt.cues = v))} />
+      </Field>
+    </>
+  );
+}
+
+function PlayerAssignment({ p, card }: { p: Player; card: Card }) {
+  const idx = card.teaching?.assignments.findIndex((a) => a.playerId === p.id) ?? -1;
+  const a = idx >= 0 ? card.teaching!.assignments[idx] : null;
+  return (
+    <Field label="Assignment on this install card">
+      <TextIn
+        area
+        value={a?.text ?? ''}
+        placeholder="What this player does"
+        onCommit={(v) =>
+          edit((_, c) => {
+            if (!c.teaching) c.teaching = { assignments: [], cues: '' };
+            const i = c.teaching.assignments.findIndex((x) => x.playerId === p.id);
+            if (i >= 0) c.teaching.assignments[i].text = v;
+            else if (v.trim()) c.teaching.assignments.push({ id: newId(), playerId: p.id, label: p.label, text: v });
+          })
+        }
+      />
+    </Field>
   );
 }
