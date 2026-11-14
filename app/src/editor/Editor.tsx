@@ -4,6 +4,7 @@ import { CardSvg } from '../render/CardSvg';
 import { THEMES } from '../render/themes';
 import { CARD_H, CARD_W, describeSpot, fieldLimits, layoutFor, makeFrame, snap } from '../model/field';
 import { layoutTeaching } from '../render/teachingLayout';
+import { CommandBar } from './CommandBar';
 import { id } from '../model/samples';
 import type { Card, Pt } from '../model/types';
 import { buildPath } from '../render/pathGeom';
@@ -651,6 +652,7 @@ export function Editor() {
         </div>
       </div>
       )}
+      <CommandBar />
       <div className="hint">{page > 0 ? 'Notes that don’t fit on the card continue here at the same size. Edit them in the Card panel.' : hint}</div>
     </div>
   );

@@ -69,6 +69,8 @@ export interface State {
   // return it to Draft.
   commit: (fn: (cards: Draft<Card[]>, card: Draft<Card>) => void, opts?: { semantic?: boolean }) => void;
   // For continuous gestures: call begin() once, then live() on every move.
+  // One undo step that edits several cards (dictated/typed commands).
+  commitCards: (cardIds: string[], fn: (card: Draft<Card>) => void) => void;
   begin: () => void;
   live: (fn: (cards: Draft<Card[]>, card: Draft<Card>) => void) => void;
   end: () => void;
@@ -175,6 +177,29 @@ export const useStore = create<State>((set, get) => {
       if (next === cards) return;
       set((s) => ({ cards: next, past: [...s.past, snap()].slice(-HISTORY_LIMIT), future: [] }));
       if (demoted) get().toast('Edited a Ready card — it’s back to Draft for review.', 'warn');
+    },
+
+    commitCards: (cardIds, fn) => {
+      const ids = new Set(cardIds);
+      let demoted = 0;
+      const prev = get().cards;
+      const next = produce(prev, (draft) => {
+        for (const c of draft) {
+          if (!ids.has(c.id)) continue;
+          const before = JSON.stringify(c);
+          fn(c);
+          if (JSON.stringify(c) === before) continue;
+          c.updatedAt = Date.now();
+          c.version += 1;
+          if (c.status === 'ready') {
+            c.status = 'draft';
+            demoted++;
+          }
+        }
+      });
+      if (next === prev) return;
+      set((s) => ({ cards: next, past: [...s.past, snap()].slice(-HISTORY_LIMIT), future: [] }));
+      if (demoted) get().toast(`${demoted} Ready card${demoted > 1 ? 's' : ''} changed — back to Draft for review.`, 'warn');
     },
 
     begin: () => {
