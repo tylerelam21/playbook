@@ -7,6 +7,7 @@ import { Toolbar } from './ui/Toolbar';
 import { ExportDialog, ImportDialog } from './ui/Dialogs';
 import { ApplyLookDialog, SaveLookDialog } from './ui/LookDialogs';
 import { I } from './ui/Icons';
+import { useDevice } from './ui/useDevice';
 import { THEMES } from './render/themes';
 import { RULESET_LABEL } from './model/field';
 import type { Ruleset, ThemeId } from './model/types';
@@ -39,13 +40,84 @@ function Toasts() {
   );
 }
 
+function Popover({ children, onClose, className }: { children: React.ReactNode; onClose: () => void; className?: string }) {
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [onClose]);
+  return (
+    <>
+      <div className="pop-scrim" onPointerDown={onClose} />
+      <div className={`popover ${className ?? ''}`}>{children}</div>
+    </>
+  );
+}
+
+function SettingsMenu({ onClose, showKeys }: { onClose: () => void; showKeys: boolean }) {
+  const { workspace, setTheme, setRuleset } = useStore();
+  return (
+    <Popover onClose={onClose} className="settings-pop">
+      <div className="panel-title">Screen style</div>
+      <div className="theme-grid">
+        {(Object.keys(THEMES) as ThemeId[]).map((t) => (
+          <button key={t} className={`theme-choice${workspace.theme === t ? ' on' : ''}`} onClick={() => setTheme(t)}>
+            <span className="theme-swatch" style={{ background: THEMES[t].paper, borderColor: THEMES[t].frame }}>
+              <span style={{ background: THEMES[t].ink.red }} />
+              <span style={{ background: THEMES[t].ink.blue }} />
+            </span>
+            {THEMES[t].name}
+          </button>
+        ))}
+      </div>
+      <p className="muted small">Only changes how cards look on screen. Exports use print colors.</p>
+      <div className="panel-title">Hash marks</div>
+      <div className="seg">
+        {(Object.keys(RULESET_LABEL) as Ruleset[]).map((r) => (
+          <button key={r} className={workspace.ruleset === r ? 'on' : ''} onClick={() => setRuleset(r)}>
+            {RULESET_LABEL[r]}
+          </button>
+        ))}
+      </div>
+      {showKeys && (
+        <>
+          <div className="panel-title">Keyboard shortcuts</div>
+          <ul className="keys">
+            <li><kbd>hold M</kbd> talk · <kbd>/</kbd> type a change</li>
+            <li><kbd>V</kbd> select · <kbd>P</kbd> draw · <kbd>D</kbd> / <kbd>O</kbd> add player · <kbd>T</kbd> note</li>
+            <li><kbd>1</kbd>–<kbd>6</kbd> line type while drawing</li>
+            <li><kbd>←</kbd><kbd>→</kbd> nudge ½ yd · <kbd>⇧</kbd> 2 yd</li>
+            <li><kbd>⌥</kbd>-drag leaves a player’s path in place</li>
+            <li><kbd>⌘D</kbd> duplicate · <kbd>⌘Z</kbd> undo · right-click for more</li>
+          </ul>
+        </>
+      )}
+    </Popover>
+  );
+}
+
 export default function App() {
-  const { workspace, setTheme, setRuleset, setPacketName, undo, redo, past, future, modal, setModal } = useStore();
+  const { workspace, setPacketName, undo, redo, past, future, modal, setModal, drawer, setDrawer, selection, activeId } = useStore();
+  const device = useDevice();
+  const [settings, setSettings] = useState(false);
   const close = () => setModal(null);
+  const compact = device.kind !== 'desktop';
+
+  // On tablet and phone, picking a card closes the card list.
+  useEffect(() => {
+    if (compact) setDrawer('none');
+  }, [activeId, compact, setDrawer]);
+
+  const selCount = selection.length;
 
   return (
-    <div className="app">
+    <div className={`app device-${device.kind}${device.touch ? ' touch' : ''}${compact && drawer !== 'none' ? ` drawer-${drawer}` : ''}`}>
       <header className="topbar">
+        {compact && (
+          <button className={`mini big${drawer === 'cards' ? ' on-accent' : ''}`} onClick={() => setDrawer(drawer === 'cards' ? 'none' : 'cards')} aria-label="Cards and looks" title="Cards and looks">
+            {I.cards()}
+          </button>
+        )}
         <div className="brand">
           <span className="logo">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
@@ -54,50 +126,43 @@ export default function App() {
               <path d="M15 4.5l4 .5-.5 4" />
             </svg>
           </span>
-          Playbook
+          {device.kind === 'desktop' && 'Playbook'}
         </div>
         <input className="packet-name" value={workspace.packetName} onChange={(e) => setPacketName(e.target.value)} aria-label="Packet name" />
-        <SavedBadge />
+        {device.kind !== 'phone' && <SavedBadge />}
         <div className="spacer" />
-        <button className="mini" onClick={undo} disabled={!past.length} title="Undo (⌘Z)">
+        <button className="mini big" onClick={undo} disabled={!past.length} title="Undo (⌘Z)" aria-label="Undo">
           {I.undo()}
         </button>
-        <button className="mini" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)">
+        <button className="mini big" onClick={redo} disabled={!future.length} title="Redo (⇧⌘Z)" aria-label="Redo">
           {I.redo()}
         </button>
-        <div className="divider" />
-        <div className="themes" title="Screen style (doesn’t change the card’s meaning)">
-          {(Object.keys(THEMES) as ThemeId[]).map((t) => (
-            <button
-              key={t}
-              className={`theme-swatch${workspace.theme === t ? ' on' : ''}`}
-              style={{ background: THEMES[t].paper, borderColor: THEMES[t].frame }}
-              onClick={() => setTheme(t)}
-              title={THEMES[t].name}
-            >
-              <span style={{ background: THEMES[t].ink.red }} />
-              <span style={{ background: THEMES[t].ink.blue }} />
-            </button>
-          ))}
-        </div>
-        <select className="ruleset" value={workspace.ruleset} onChange={(e) => setRuleset(e.target.value as Ruleset)} title="Hash spacing">
-          {(Object.keys(RULESET_LABEL) as Ruleset[]).map((r) => (
-            <option key={r} value={r}>
-              {RULESET_LABEL[r]} hashes
-            </option>
-          ))}
-        </select>
-        <button className="btn primary" onClick={() => setModal({ type: 'export' })}>
-          {I.download()} Export
+        <button className="mini big" onClick={() => setSettings(true)} title="Settings" aria-label="Settings">
+          {I.gear()}
         </button>
+        {compact && (
+          <button className={`mini big${drawer === 'details' ? ' on-accent' : ''}`} onClick={() => setDrawer(drawer === 'details' ? 'none' : 'details')} aria-label="Card details" title="Card details">
+            {I.sliders()}
+          </button>
+        )}
+        <button className="btn primary" onClick={() => setModal({ type: 'export' })} aria-label="Export">
+          {I.download()} {device.kind !== 'phone' && 'Export'}
+        </button>
+        {settings && <SettingsMenu onClose={() => setSettings(false)} showKeys={!device.touch} />}
       </header>
 
       <Sidebar />
       <main className="main">
         <Toolbar />
         <Editor />
+        {compact && selCount > 0 && drawer !== 'details' && (
+          <button className="selection-chip" onClick={() => setDrawer('details')}>
+            {selCount === 1 ? '1 selected' : `${selCount} selected`} · Details
+          </button>
+        )}
       </main>
       <Inspector />
+      {compact && drawer !== 'none' && <div className="drawer-scrim" onPointerDown={() => setDrawer('none')} />}
 
       {modal?.type === 'import' && <ImportDialog onClose={close} />}
       {modal?.type === 'export' && <ExportDialog onClose={close} />}

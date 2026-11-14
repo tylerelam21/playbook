@@ -8,6 +8,7 @@ import { clampToField } from '../model/field';
 import type { Card, Side } from '../model/types';
 import { buildRequest, type InterpretResult } from '../ai/protocol';
 import { applyAiOps } from '../ai/applyAi';
+import { useDevice } from '../ui/useDevice';
 
 // Say or type a change.
 //  - Hold M (or the mic button) to talk; release to stop. A quick tap keeps
@@ -201,6 +202,7 @@ export function CommandBar() {
   const card = useStore(activeCard);
   const setGhost = useStore((s) => s.setGhost);
   const speech = getSpeechCtor();
+  const device = useDevice();
   const setCmdHeight = useStore((s) => s.setCmdHeight);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -401,6 +403,35 @@ export function CommandBar() {
     setGhost(null);
   }, [cardId, setGhost]);
 
+  // Touch screens: a big hold-to-talk button, plus a small one to type.
+  if (!open && device.touch)
+    return (
+      <div className="fab-wrap">
+        <button
+          className="fab-type"
+          aria-label="Type a change"
+          onClick={() => {
+            setOpen(true);
+            setTimeout(() => inputRef.current?.focus(), 0);
+          }}
+        >
+          Aa
+        </button>
+        <button
+          className="fab"
+          aria-label="Hold to talk"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            press();
+          }}
+          onPointerUp={release}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <MicIcon />
+        </button>
+      </div>
+    );
+
   if (!open)
     return (
       <button
@@ -460,7 +491,7 @@ export function CommandBar() {
           ))}
           <div className="cmd-actions">
             {plan.question ? (
-              <span className="muted small">Answer by holding M or typing below.</span>
+              <span className="muted small">Answer by {device.touch ? 'holding the mic' : 'holding M'} or typing below.</span>
             ) : (
               <button
                 className="btn"
@@ -478,7 +509,7 @@ export function CommandBar() {
             </button>
             {!plan.question && (
               <button className="btn primary" disabled={!canApply} onClick={apply}>
-                {plan.problems.length ? 'Apply the rest' : 'Apply'} <kbd>↵</kbd>
+                {plan.problems.length ? 'Apply the rest' : 'Apply'} {!device.touch && <kbd>↵</kbd>}
               </button>
             )}
           </div>
@@ -523,7 +554,7 @@ export function CommandBar() {
         <input
           ref={inputRef}
           value={listening ? `${text}${interim ? (text ? ' ' : '') + interim : ''}` : text}
-          placeholder={listening ? 'Listening… release to stop' : 'Hold M and talk, or type: “corners press, bail at the snap”'}
+          placeholder={listening ? 'Listening… release to stop' : device.touch ? 'Hold the mic and talk, or type a change' : 'Hold M and talk, or type: “corners press, bail at the snap”'}
           onChange={(e) => {
             setText(e.target.value);
             if (plan) showPlan(null);

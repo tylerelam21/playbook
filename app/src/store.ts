@@ -64,6 +64,9 @@ export interface State {
   // A proposed (not yet applied) version of the active card, shown on the canvas.
   ghost: Card | null;
   setGhost: (c: Card | null) => void;
+  // Tablet/phone: which slide-in panel is open (desktop shows both panels).
+  drawer: 'none' | 'cards' | 'details';
+  setDrawer: (d: 'none' | 'cards' | 'details') => void;
   cmdHeight: number; // space the command panel takes at the bottom of the canvas
   setCmdHeight: (h: number) => void;
   sideTab: 'cards' | 'looks';
@@ -174,6 +177,8 @@ export const useStore = create<State>((set, get) => {
     modal: null,
     ghost: null,
     setGhost: (ghost) => set({ ghost }),
+    drawer: 'none',
+    setDrawer: (drawer) => set({ drawer }),
     cmdHeight: 0,
     setCmdHeight: (cmdHeight) => set({ cmdHeight }),
     sideTab: 'cards',

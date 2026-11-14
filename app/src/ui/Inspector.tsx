@@ -8,7 +8,6 @@ import { id as newId } from '../model/samples';
 import { INK_ORDER, THEMES } from '../render/themes';
 import { I } from './Icons';
 import { SIDE_NAME, latest, sideState } from '../model/looks';
-import { STATUS_LABEL } from './Sidebar';
 
 function Seg<T extends string>({ value, options, onChange }: { value: T; options: { v: T; label: React.ReactNode; title?: string }[]; onChange: (v: T) => void }) {
   return (
@@ -161,6 +160,7 @@ function CardPanel({ card }: { card: Card }) {
     toast('Flipped the drawing. Play and defense calls weren’t renamed — card marked Needs review.', 'warn');
   };
 
+  const flagged = card.status === 'review';
   return (
     <div className="panel">
       <div className="panel-title">Card</div>
@@ -190,7 +190,32 @@ function CardPanel({ card }: { card: Card }) {
         />
       </Field>
 
-      <Field label="Card type">
+      <div className={`status-row${justReady ? ' celebrate' : ''}`}>
+        <Seg<'draft' | 'ready'>
+          value={card.status === 'ready' ? 'ready' : 'draft'}
+          onChange={setStatus}
+          options={[
+            { v: 'draft', label: <><span className="status-dot draft" /> Draft</> },
+            { v: 'ready', label: <><span className="status-dot ready" /> Ready to print</> },
+          ]}
+        />
+        {justReady && <span className="burst">{I.check()}</span>}
+      </div>
+      {flagged && (
+        <div className="flag">
+          <span className="status-dot review" /> Flagged to double-check (flipped, or imported with a question).
+          <button className="link" onClick={() => setStatus('draft')}>
+            Looks right
+          </button>
+        </div>
+      )}
+
+      <Section id="looks" title="Looks on this card" defaultOpen>
+        <LookSlot card={card} side="D" onSample={(k) => applyLook('D', k)} />
+        <LookSlot card={card} side="O" onSample={(k) => applyLook('O', k)} />
+      </Section>
+
+      <Section id="install" title={card.mode === 'install' ? 'Install card' : 'Install notes'} defaultOpen={card.mode === 'install'} badge={card.mode === 'install' ? 'On' : undefined}>
         <Seg<CardMode>
           value={card.mode ?? 'scout'}
           onChange={(m) =>
@@ -200,55 +225,54 @@ function CardPanel({ card }: { card: Card }) {
             })
           }
           options={[
-            { v: 'scout', label: 'Scout', title: 'Field only, like your current cards' },
-            { v: 'install', label: 'Install', title: 'Adds assignments and coaching points under the field' },
+            { v: 'scout', label: 'Scout card', title: 'Field only, like your current cards' },
+            { v: 'install', label: 'Install card', title: 'Adds assignments and coaching points under the field' },
           ]}
         />
-      </Field>
-      {card.mode === 'install' && <TeachingSection card={card} />}
+        {card.mode === 'install' ? <TeachingSection card={card} /> : <p className="muted small">Switch to Install to add assignments and coaching points under the field.</p>}
+      </Section>
 
-      <div className="panel-title">Status</div>
-      <div className={`status-row${justReady ? ' celebrate' : ''}`}>
-        <Seg<CardStatus>
-          value={card.status}
-          onChange={setStatus}
-          options={(['draft', 'review', 'ready'] as const).map((s) => ({
-            v: s,
-            label: (
-              <>
-                <span className={`status-dot ${s}`} /> {STATUS_LABEL[s]}
-              </>
-            ),
-          }))}
-        />
-        {justReady && <span className="burst">{I.check()}</span>}
-      </div>
-      <p className="muted small">Any change to the drawing or calls sends a Ready card back to Draft.</p>
+      <Section id="more" title="More">
+        <div className="stack">
+          <button className="btn" onClick={() => duplicateCard(card.id)}>
+            {I.copy()} Duplicate card
+          </button>
+          <button className="btn" onClick={flip}>
+            {I.flip()} Flip left ↔ right
+          </button>
+        </div>
+      </Section>
+    </div>
+  );
+}
 
-      <div className="panel-title">Looks on this card</div>
-      <LookSlot card={card} side="D" onSample={(k) => applyLook('D', k)} />
-      <LookSlot card={card} side="O" onSample={(k) => applyLook('O', k)} />
-
-      <div className="panel-title">Actions</div>
-      <div className="stack">
-        <button className="btn" onClick={() => duplicateCard(card.id)}>
-          {I.copy()} Duplicate card
-        </button>
-        <button className="btn" onClick={flip}>
-          {I.flip()} Flip left ↔ right
-        </button>
-      </div>
-
-      <div className="tips">
-        <div className="panel-title">Quick keys</div>
-        <ul>
-          <li><kbd>P</kbd> then click a player to draw · <kbd>1</kbd>–<kbd>6</kbd> line type</li>
-          <li><kbd>D</kbd> / <kbd>O</kbd> drop a defender / offensive player</li>
-          <li><kbd>←</kbd><kbd>→</kbd> nudge ½ yd · <kbd>⇧</kbd> for 2 yd</li>
-          <li><kbd>⌥</kbd>-drag a player to leave their path in place</li>
-          <li><kbd>⌘D</kbd> duplicate · <kbd>⌘Z</kbd> undo</li>
-        </ul>
-      </div>
+// Collapsible panel section; remembers open/closed per section.
+function Section({ id, title, children, defaultOpen = false, badge }: { id: string; title: string; children: React.ReactNode; defaultOpen?: boolean; badge?: string }) {
+  const key = `playbook.section.${id}`;
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? defaultOpen : v === '1';
+    } catch {
+      return defaultOpen;
+    }
+  });
+  const toggle = () => {
+    setOpen(!open);
+    try {
+      localStorage.setItem(key, open ? '0' : '1');
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <div className={`section${open ? ' open' : ''}`}>
+      <button className="section-head" onClick={toggle} aria-expanded={open}>
+        <span className="chev">›</span>
+        {title}
+        {badge && <span className="tag">{badge}</span>}
+      </button>
+      {open && <div className="section-body">{children}</div>}
     </div>
   );
 }
