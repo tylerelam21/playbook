@@ -4,17 +4,33 @@ import { CardSvg } from '../render/CardSvg';
 import { THEMES } from '../render/themes';
 import type { CardStatus } from '../model/types';
 import { I } from './Icons';
+import { LooksPanel } from './LooksPanel';
+import { packetQuestions, sideState } from '../model/looks';
 
 export const STATUS_LABEL: Record<CardStatus, string> = { draft: 'Draft', review: 'Needs review', ready: 'Ready' };
 
-export function Sidebar({ onImport }: { onImport: () => void }) {
-  const { cards, activeId, setActive, addCard, duplicateCard, deleteCard, moveCard, workspace } = useStore();
+export function Sidebar() {
+  const { cards, looks, activeId, setActive, addCard, duplicateCard, deleteCard, moveCard, workspace, sideTab, setSideTab, setModal } = useStore();
+  const toResolve = packetQuestions(cards, looks).length;
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const ready = cards.filter((c) => c.status === 'ready').length;
 
   return (
     <aside className="sidebar">
+      <div className="side-tabs">
+        <button className={sideTab === 'cards' ? 'on' : ''} onClick={() => setSideTab('cards')}>
+          Cards <span className="count">{cards.length}</span>
+        </button>
+        <button className={sideTab === 'looks' ? 'on' : ''} onClick={() => setSideTab('looks')}>
+          Looks <span className="count">{looks.length}</span>
+          {toResolve > 0 && <span className="q-badge">{toResolve}</span>}
+        </button>
+      </div>
+      {sideTab === 'looks' ? (
+        <LooksPanel />
+      ) : (
+        <>
       <div className="side-head">
         <div>
           <div className="side-title">Packet</div>
@@ -56,6 +72,11 @@ export function Sidebar({ onImport }: { onImport: () => void }) {
               <div className="card-row1">
                 <span className="play-no">{c.playNo || '—'}</span>
                 {c.period && <span className="period">{c.period}</span>}
+                {sideState(c, 'D', looks).kind === 'unknown' && (
+                  <span className="undef-pill" title="This defense isn’t a saved look yet">
+                    not saved
+                  </span>
+                )}
                 <span className={`status-dot ${c.status}`} title={STATUS_LABEL[c.status]} />
               </div>
               <div className="card-call" title={c.play}>
@@ -81,10 +102,12 @@ export function Sidebar({ onImport }: { onImport: () => void }) {
         <button className="btn primary" onClick={() => addCard(activeId)}>
           {I.plus()} New card
         </button>
-        <button className="btn" onClick={onImport}>
+        <button className="btn" onClick={() => setModal({ type: 'import' })}>
           {I.paste()} Paste script
         </button>
       </div>
+        </>
+      )}
     </aside>
   );
 }

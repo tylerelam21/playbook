@@ -5,6 +5,7 @@ import { Sidebar } from './ui/Sidebar';
 import { Inspector } from './ui/Inspector';
 import { Toolbar } from './ui/Toolbar';
 import { ExportDialog, ImportDialog } from './ui/Dialogs';
+import { ApplyLookDialog, SaveLookDialog } from './ui/LookDialogs';
 import { I } from './ui/Icons';
 import { THEMES } from './render/themes';
 import { RULESET_LABEL } from './model/field';
@@ -39,8 +40,8 @@ function Toasts() {
 }
 
 export default function App() {
-  const { workspace, setTheme, setRuleset, setPacketName, undo, redo, past, future } = useStore();
-  const [dialog, setDialog] = useState<'import' | 'export' | null>(null);
+  const { workspace, setTheme, setRuleset, setPacketName, undo, redo, past, future, modal, setModal } = useStore();
+  const close = () => setModal(null);
 
   return (
     <div className="app">
@@ -86,20 +87,24 @@ export default function App() {
             </option>
           ))}
         </select>
-        <button className="btn primary" onClick={() => setDialog('export')}>
+        <button className="btn primary" onClick={() => setModal({ type: 'export' })}>
           {I.download()} Export
         </button>
       </header>
 
-      <Sidebar onImport={() => setDialog('import')} />
+      <Sidebar />
       <main className="main">
         <Toolbar />
         <Editor />
       </main>
       <Inspector />
 
-      {dialog === 'import' && <ImportDialog onClose={() => setDialog(null)} />}
-      {dialog === 'export' && <ExportDialog onClose={() => setDialog(null)} />}
+      {modal?.type === 'import' && <ImportDialog onClose={close} />}
+      {modal?.type === 'export' && <ExportDialog onClose={close} />}
+      {modal?.type === 'saveLook' && <SaveLookDialog key={modal.side + modal.name} side={modal.side} name={modal.name} onClose={close} />}
+      {modal?.type === 'applyLook' && (
+        <ApplyLookDialog key={modal.lookId + modal.cardIds.join()} lookId={modal.lookId} cardIds={modal.cardIds} title={modal.title} alias={modal.alias} onClose={close} />
+      )}
       <Toasts />
     </div>
   );
