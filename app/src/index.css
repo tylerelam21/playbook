@@ -420,3 +420,19 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
 .cmd-help ul { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
 .cmd-help .link { margin: 0; text-align: left; font-weight: 500; color: var(--text); }
 .cmd-help .link:hover { color: var(--accent); }
+
+/* ---- AI interpretation ------------------------------------------------- */
+.ghost-glow { box-shadow: 0 0 0 3px var(--accent), 0 0 40px rgba(61, 220, 132, 0.35), 0 30px 60px -20px rgba(0, 0, 0, 0.7); animation: ghost 1.6s ease-in-out infinite; }
+@keyframes ghost { 50% { box-shadow: 0 0 0 3px rgba(61, 220, 132, 0.5), 0 0 24px rgba(61, 220, 132, 0.2), 0 30px 60px -20px rgba(0, 0, 0, 0.7); } }
+.ghost-badge { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 20px; z-index: 2; }
+.cmd-heard .src { display: inline-block; font-style: normal; font-size: 10px; font-weight: 800; letter-spacing: 0.6px; padding: 1px 6px; border-radius: 5px; margin-right: 8px; vertical-align: 1px; }
+.cmd-heard .src.ai { background: rgba(180, 140, 255, 0.18); color: #c9b0ff; }
+.cmd-heard .src.quick { background: var(--panel-3); color: var(--muted); }
+.cmd-question { font-size: 14px; line-height: 1.45; padding: 8px 10px; border-radius: 9px; background: rgba(91, 155, 255, 0.1); border-left: 3px solid #5b9bff; }
+.cmd-preview.thinking { flex-direction: row; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+.cmd-preview.thinking .thinking-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dots { display: inline-flex; gap: 4px; }
+.dots i { width: 7px; height: 7px; border-radius: 50%; background: #b48cff; animation: dot 1s ease-in-out infinite; }
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dot { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-3px); } }

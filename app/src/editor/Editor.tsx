@@ -37,6 +37,8 @@ interface InlineEdit {
 export function Editor() {
   const card = useStore(activeCard);
   const { workspace, selection, tool, preset, layers, zoom } = useStore();
+  const ghost = useStore((s) => (s.ghost && s.ghost.id === card.id ? s.ghost : null));
+  const cmdHeight = useStore((s) => s.cmdHeight);
   const theme = THEMES[workspace.theme];
   const frame = useMemo(() => makeFrame(card.hash, workspace.ruleset, layoutFor(card)), [card.hash, workspace.ruleset, card.mode]);
   const FIELD = frame.field;
@@ -58,18 +60,20 @@ export function Editor() {
 
   const scale = fit * zoom;
 
-  // Fit the card to the available space.
+  // Fit the card to the available space (leaving room for the command panel).
+  const [avail, setAvail] = useState({ w: 800, h: 600 });
   useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const w = el.clientWidth - 48;
-      const h = el.clientHeight - 48;
-      setFit(Math.max(0.2, Math.min(w / CARD_W, h / CARD_H)));
-    });
+    const ro = new ResizeObserver(() => setAvail({ w: el.clientWidth, h: el.clientHeight }));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  useLayoutEffect(() => {
+    const w = avail.w - 48;
+    const h = avail.h - 48 - (cmdHeight ? cmdHeight + 8 : 0);
+    setFit(Math.max(0.2, Math.min(w / CARD_W, h / CARD_H)));
+  }, [avail, cmdHeight]);
 
   // Leaving the path tool or switching cards cancels an unfinished path.
   useEffect(() => {
@@ -560,7 +564,7 @@ export function Editor() {
             : 'Drag to move · double-click a player to rename · double-click a line to add a bend';
 
   return (
-    <div className={`editor tool-${tool}`} ref={wrapRef}>
+    <div className={`editor tool-${tool}`} ref={wrapRef} style={cmdHeight ? { paddingBottom: 24 + cmdHeight + 8 } : undefined}>
       {totalPages > 1 && (
         <div className="page-tabs">
           {Array.from({ length: totalPages }, (_, i) => (
@@ -570,7 +574,15 @@ export function Editor() {
           ))}
         </div>
       )}
-      {page > 0 ? (
+      {ghost && page === 0 ? (
+        <div className="stage" style={{ width: CARD_W * scale, height: CARD_H * scale }}>
+          <div className="paper-shadow ghost-glow" />
+          <div className="svg-host">
+            <CardSvg card={ghost} theme={theme} ruleset={workspace.ruleset} />
+          </div>
+          <div className="ghost-badge">Preview · not applied yet</div>
+        </div>
+      ) : page > 0 ? (
         <div className="stage" style={{ width: CARD_W * scale, height: CARD_H * scale }}>
           <div className="paper-shadow" />
           <div className="svg-host">

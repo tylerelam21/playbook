@@ -61,6 +61,11 @@ export interface State {
   savedAt: number;
   zoom: number;
   modal: Modal;
+  // A proposed (not yet applied) version of the active card, shown on the canvas.
+  ghost: Card | null;
+  setGhost: (c: Card | null) => void;
+  cmdHeight: number; // space the command panel takes at the bottom of the canvas
+  setCmdHeight: (h: number) => void;
   sideTab: 'cards' | 'looks';
   setModal: (m: Modal) => void;
   setSideTab: (t: 'cards' | 'looks') => void;
@@ -167,6 +172,10 @@ export const useStore = create<State>((set, get) => {
     savedAt: Date.now(),
     zoom: 1,
     modal: null,
+    ghost: null,
+    setGhost: (ghost) => set({ ghost }),
+    cmdHeight: 0,
+    setCmdHeight: (cmdHeight) => set({ cmdHeight }),
     sideTab: 'cards',
     setModal: (modal) => set({ modal }),
     setSideTab: (sideTab) => set({ sideTab }),

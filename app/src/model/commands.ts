@@ -386,7 +386,7 @@ function zoneSpot(zone: Zone, sign: number) {
   }
 }
 
-function moveWithPaths(card: Draft<Card>, p: Draft<Player>, dx: number, dy: number) {
+export function moveWithPaths(card: Draft<Card>, p: Draft<Player>, dx: number, dy: number) {
   p.x += dx;
   p.y += dy;
   for (const pa of card.paths) if (pa.ownerId === p.id) pa.points = pa.points.map((q) => ({ x: q.x + dx, y: q.y + dy }));

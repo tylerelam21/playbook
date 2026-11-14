@@ -20,7 +20,14 @@ Saved team looks: save a card's defense or formation once and reuse it. Defense 
 
 Install cards: switch a card to Install to add player assignments and coaching points under the field. Notes print at a fixed size; anything that doesn't fit continues on extra pages (PDF and PowerPoint) instead of shrinking. Players can carry a read-order number.
 
-Say or type a change: press **M** to talk (browser speech recognition) or **/** to type, e.g. "corners at 7, mike rush the A gap", "nickel over number 2", "corners at 8 on all chop cards". The words are interpreted in the browser by `src/model/commands.ts` (no AI, no server), shown as a preview, and applied as one undoable change. Unrecognized words are reported, not guessed. Note: Chrome and Edge send the audio itself to their speech service.
+Say or type a change: hold **M** (or the mic button) to talk, release to stop, or press **/** to type. Exact simple phrases ("corners at 7") are handled instantly in the browser by `src/model/commands.ts`. Anything else goes to Claude through the Vercel function `api/interpret.ts`, which returns proposed edits (`src/ai/protocol.ts`); the browser checks them against the card (`src/ai/applyAi.ts`) and shows a preview on the card before anything changes. Claude asks a question instead of guessing at team terms it hasn't seen.
+
+AI setup (Vercel → Project → Settings → Environment Variables):
+- `ANTHROPIC_API_KEY` (required)
+- `PLAYBOOK_MODEL` (optional, default `claude-opus-5-5`)
+- `PLAYBOOK_EFFORT` (optional, `low` | `medium` | `high`, default `low` for speed)
+
+Without the key the app still works; the AI path explains it isn't set up and falls back to the built-in phrases. `npm run dev` (Vite) doesn't run the function; use `vercel dev` to test it locally.
 
 Tests: `npm test`.
 

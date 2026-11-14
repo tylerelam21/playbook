@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Draft } from 'immer';
+import { produce, type Draft } from 'immer';
 import { activeCard, useStore } from '../store';
-import { applyOps, describeOp, parseCommand, scopeCards, type Action, type Parsed } from '../model/commands';
+import { applyOps, describeOp, parseCommand, scopeCards, type Action } from '../model/commands';
 import { applyVersionTo, latest } from '../model/looks';
-import { DEFENSE_LOOKS, OFFENSE_LOOKS } from '../model/samples';
+import { DEFENSE_LOOKS, OFFENSE_LOOKS, blankCard } from '../model/samples';
 import { clampToField } from '../model/field';
 import type { Card, Side } from '../model/types';
-import { produce } from 'immer';
+import { buildRequest, type InterpretResult } from '../ai/protocol';
+import { applyAiOps } from '../ai/applyAi';
 
-// Say or type a change. Speech uses the browser's built-in recognition
-// (Chrome/Edge send audio to their speech service; Safari may transcribe on
-// device). Understanding the words happens here, in model/commands.ts.
+// Say or type a change.
+//  - Hold M (or the mic button) to talk; release to stop. A quick tap keeps
+//    listening until you tap again.
+//  - Exact simple commands ("corners at 7") are handled instantly in the
+//    browser. Everything else goes to Claude through /api/interpret.
+//  - Nothing changes until you apply the preview.
 
 type Recognition = {
   lang: string;
@@ -23,36 +27,48 @@ type Recognition = {
   onerror: ((e: { error: string }) => void) | null;
 };
 
-const SpeechCtor: (new () => Recognition) | undefined =
-  typeof window !== 'undefined'
-    ? ((window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition }).SpeechRecognition ??
-      (window as unknown as { webkitSpeechRecognition?: new () => Recognition }).webkitSpeechRecognition)
-    : undefined;
+const getSpeechCtor = (): (new () => Recognition) | undefined => {
+  if (typeof window === 'undefined') return undefined;
+  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition;
+};
 
 const EXAMPLES = [
-  'corners at 7',
-  'move both corners back one',
-  'nickel over number 2',
-  'mike rush the A gap, will drop to the hook',
-  'free safety drop to deep middle',
-  'will 2 left',
-  'hash left, defense chop',
-  'apply chop',
-  'corners at 8 on cards 3, 4 and 7',
-  'corners at 8 on all chop cards',
-  'add a defender R at 6 deep 8 left',
-  'mike assignment: fill the A gap fast',
-  'new card, play call Larry Sniff 23, defense chop',
-  'next card · mark it ready · undo',
+  'Corners press, outside leverage',
+  'Bring the nickel down to apex and bail the corners at the snap',
+  'Mike and Will scrape over the top, Mike fills the A gap',
+  'Rotate to cloud on the boundary side',
+  'Slant the line to the field',
+  'Free safety rolls down into the robber hole',
+  'On all CHOP cards, corners at 8',
+  'New card: play Larry Sniff 23, defense chop, hash right',
+  'Mike assignment: fill the A gap fast',
 ];
 
-interface Preview {
+const TAP_MS = 300;
+
+interface Plan {
+  source: 'quick' | 'ai';
   text: string;
-  parsed: Parsed;
   lines: string[];
   targets: Card[];
   problems: string[];
+  question: string | null;
+  note?: string;
+  apply: () => void;
+  ghost: Card | null;
 }
+
+const ACTION_TEXT: Record<Action['t'], string> = {
+  saveLook: 'Save as team look',
+  newCard: 'New card',
+  nextCard: 'Go to next card',
+  prevCard: 'Go to previous card',
+  duplicate: 'Duplicate this card',
+  ready: 'Mark Ready',
+  undo: 'Undo last change',
+};
+const NAV = new Set<Action['t']>(['newCard', 'duplicate', 'nextCard', 'prevCard']);
 
 function lookHooks(ruleset: 'hs' | 'college' | 'nfl') {
   return {
@@ -73,107 +89,244 @@ function lookHooks(ruleset: 'hs' | 'college' | 'nfl') {
   };
 }
 
-const ACTION_TEXT: Record<Action['t'], string> = {
-  saveLook: 'Save as team look',
-  newCard: 'New card',
-  nextCard: 'Go to next card',
-  prevCard: 'Go to previous card',
-  duplicate: 'Duplicate this card',
-  ready: 'Mark Ready',
-  undo: 'Undo last change',
-};
+// ---- Plans --------------------------------------------------------------------
+
+// The built-in interpreter. Returns null unless it understood every word.
+function quickPlan(text: string): Plan | null {
+  const st = useStore.getState();
+  const parsed = parseCommand(text, st.looks);
+  if (parsed.unknown.length || (!parsed.ops.length && !parsed.actions.length)) return null;
+  const navFirst = parsed.actions.some((a) => NAV.has(a.t));
+  const { cards: targets, problem } = scopeCards(parsed.scope, st.cards, st.activeId);
+  if (problem) return null;
+  const hooks = lookHooks(st.workspace.ruleset);
+  const problems: string[] = [];
+  let ghost: Card | null = null;
+  if (parsed.ops.length && !navFirst) {
+    for (const c of targets) {
+      const next = produce(c, (d) => void problems.push(...applyOps(d, parsed.ops, hooks)));
+      if (c.id === st.activeId) ghost = next;
+    }
+  }
+  if (problems.length) return null; // let Claude try (it can ask a better question)
+  const lines = [
+    ...parsed.actions.filter((a) => NAV.has(a.t)).map((a) => ACTION_TEXT[a.t]),
+    ...parsed.ops.map(describeOp),
+    ...parsed.actions.filter((a) => !NAV.has(a.t)).map((a) => (a.t === 'saveLook' ? `Save ${a.side === 'D' ? 'defense' : 'formation'} as “${a.name}”` : ACTION_TEXT[a.t])),
+  ];
+  return {
+    source: 'quick',
+    text,
+    lines,
+    targets: navFirst ? [] : targets,
+    problems: [],
+    question: null,
+    ghost,
+    apply: () => {
+      for (const a of parsed.actions.filter((x) => NAV.has(x.t))) {
+        const s = useStore.getState();
+        const idx = s.cards.findIndex((c) => c.id === s.activeId);
+        if (a.t === 'newCard') s.addCard(s.activeId);
+        else if (a.t === 'duplicate') s.duplicateCard(s.activeId);
+        else if (a.t === 'nextCard' && idx < s.cards.length - 1) s.setActive(s.cards[idx + 1].id);
+        else if (a.t === 'prevCard' && idx > 0) s.setActive(s.cards[idx - 1].id);
+      }
+      if (parsed.ops.length) {
+        const s = useStore.getState();
+        const ids = navFirst ? [s.activeId] : targets.map((c) => c.id);
+        s.commitCards(ids, (d) => void applyOps(d, parsed.ops, lookHooks(s.workspace.ruleset)));
+      }
+      for (const a of parsed.actions) {
+        const s = useStore.getState();
+        if (a.t === 'ready') s.commit((_, c) => void (c.status = 'ready'), { semantic: false });
+        else if (a.t === 'undo') s.undo();
+        else if (a.t === 'saveLook') s.setModal({ type: 'saveLook', side: a.side, name: a.name });
+      }
+    },
+  };
+}
+
+function aiPlan(text: string, result: InterpretResult): Plan {
+  const st = useStore.getState();
+  const ctx = { looks: st.looks, ruleset: st.workspace.ruleset };
+  const known = result.changes.filter((ch) => ch.cardId === 'new' || st.cards.some((c) => c.id === ch.cardId));
+  const problems: string[] = [];
+  if (known.length < result.changes.length) problems.push('Skipped changes for a card that isn’t in this packet');
+  let ghost: Card | null = null;
+  for (const ch of known) {
+    const base = ch.cardId === 'new' ? blankCard('') : st.cards.find((c) => c.id === ch.cardId)!;
+    const next = produce(base, (d) => void problems.push(...applyAiOps(d, ch.ops, ctx)));
+    if (ch.cardId === st.activeId) ghost = next;
+  }
+  return {
+    source: 'ai',
+    text,
+    lines: result.summary,
+    targets: st.cards.filter((c) => known.some((ch) => ch.cardId === c.id)),
+    problems: [...new Set(problems)],
+    question: result.question,
+    ghost,
+    apply: () => {
+      const s = useStore.getState();
+      for (const ch of known.filter((c) => c.cardId === 'new')) {
+        s.addCard(s.activeId);
+        const nid = useStore.getState().activeId;
+        useStore.getState().commitCards([nid], (d) => void applyAiOps(d, ch.ops, ctx));
+      }
+      const rest = known.filter((c) => c.cardId !== 'new');
+      if (rest.length) {
+        const byId = new Map(rest.map((c) => [c.cardId, c.ops]));
+        useStore.getState().commitCards([...byId.keys()], (d) => void applyAiOps(d, byId.get(d.id)!, ctx));
+      }
+    },
+  };
+}
+
+// ---- Component -------------------------------------------------------------------
 
 export function CommandBar() {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const [interim, setInterim] = useState('');
   const [listening, setListening] = useState(false);
-  const [preview, setPreview] = useState<Preview | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [thinking, setThinking] = useState(false);
   const [help, setHelp] = useState(false);
   const recRef = useRef<Recognition | null>(null);
+  const pressAt = useRef(0);
+  const sticky = useRef(false); // tapped (not held): keep listening until tapped again
+  const abortRef = useRef<AbortController | null>(null);
+  const history = useRef<{ said: string; reply: string }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const card = useStore(activeCard);
+  const setGhost = useStore((s) => s.setGhost);
+  const speech = getSpeechCtor();
+  const setCmdHeight = useStore((s) => s.setCmdHeight);
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  const build = (input: string): Preview | null => {
-    const st = useStore.getState();
-    const parsed = parseCommand(input, st.looks);
-    if (!parsed.ops.length && !parsed.actions.length && !parsed.unknown.length) return null;
-    // Cards created or chosen by actions come first, so their ops target the new card.
-    const navFirst = parsed.actions.some((a) => a.t === 'newCard' || a.t === 'duplicate' || a.t === 'nextCard' || a.t === 'prevCard');
-    const { cards: targets, problem } = scopeCards(parsed.scope, st.cards, st.activeId);
-    const problems: string[] = problem ? [problem] : [];
-    if (parsed.ops.length && !navFirst) {
-      // Dry run on copies to surface problems before anything changes.
-      const hooks = lookHooks(st.workspace.ruleset);
-      for (const c of targets) produce(c, (d) => void problems.push(...applyOps(d, parsed.ops, hooks)));
+  // Tell the canvas how much room the panel needs so the card stays visible.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) {
+      setCmdHeight(0);
+      return;
     }
-    const lines = [...parsed.actions.filter((a) => navFirst && a.t !== 'saveLook' && a.t !== 'ready' && a.t !== 'undo').map((a) => ACTION_TEXT[a.t]), ...parsed.ops.map(describeOp)];
-    lines.push(...parsed.actions.filter((a) => !navFirst || a.t === 'saveLook' || a.t === 'ready' || a.t === 'undo').map((a) => (a.t === 'saveLook' ? `Save ${a.side === 'D' ? 'defense' : 'formation'} as “${a.name}”` : ACTION_TEXT[a.t])));
-    return { text: input, parsed, lines, targets: navFirst ? [] : targets, problems: [...new Set(problems)] };
+    const ro = new ResizeObserver(() => setCmdHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      setCmdHeight(0);
+    };
+  }, [open, setCmdHeight]);
+
+  const showPlan = (p: Plan | null) => {
+    setPlan(p);
+    setGhost(p?.ghost ?? null);
   };
 
-  const submit = (input = text) => {
-    const p = build(input.trim());
-    setPreview(p);
-    if (!p) useStore.getState().toast('Nothing to do — try one of the examples (click ?).', 'info');
+  // When the AI can't be reached, show what the built-in interpreter made of it.
+  const fallbackPlan = (input: string, note: string): Plan => {
+    const st = useStore.getState();
+    const parsed = parseCommand(input, st.looks);
+    const { cards: targets } = scopeCards(parsed.scope, st.cards, st.activeId);
+    return {
+      source: 'quick',
+      text: input,
+      lines: parsed.ops.map(describeOp),
+      targets,
+      problems: parsed.unknown.map((u) => `Didn’t understand “${u}”`),
+      question: null,
+      note,
+      ghost: null,
+      apply: () => {
+        if (parsed.ops.length) {
+          const s = useStore.getState();
+          s.commitCards(targets.map((c) => c.id), (d) => void applyOps(d, parsed.ops, lookHooks(s.workspace.ruleset)));
+        }
+      },
+    };
+  };
+
+  const submit = async (raw = text) => {
+    const input = raw.trim();
+    if (!input) return;
+    abortRef.current?.abort();
+    const quick = quickPlan(input);
+    if (quick) {
+      showPlan(quick);
+      return;
+    }
+    const st = useStore.getState();
+    const body = buildRequest(input, st.cards, st.activeId, st.looks, st.workspace, history.current.slice(-4));
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setThinking(true);
+    showPlan(null);
+    try {
+      const res = await fetch('/api/interpret', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || data.error) {
+        const why = res.status === 404 ? 'AI isn’t available here (no server function in this preview).' : data?.message ?? `AI request failed (${res.status}).`;
+        showPlan(fallbackPlan(input, why));
+        return;
+      }
+      const result = data as InterpretResult;
+      history.current = [...history.current, { said: input, reply: result.question ?? result.summary.join('; ') }].slice(-4);
+      showPlan(aiPlan(input, result));
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      showPlan(fallbackPlan(input, 'Couldn’t reach the AI. Check your connection.'));
+    } finally {
+      if (abortRef.current === ctrl) setThinking(false);
+    }
   };
 
   const apply = () => {
-    if (!preview) return;
-    const st = useStore.getState();
-    const { parsed } = preview;
-    const navFirst = parsed.actions.filter((a) => ['newCard', 'duplicate', 'nextCard', 'prevCard'].includes(a.t));
-    for (const a of navFirst) {
-      const s = useStore.getState();
-      const idx = s.cards.findIndex((c) => c.id === s.activeId);
-      if (a.t === 'newCard') s.addCard(s.activeId);
-      else if (a.t === 'duplicate') s.duplicateCard(s.activeId);
-      else if (a.t === 'nextCard' && idx < s.cards.length - 1) s.setActive(s.cards[idx + 1].id);
-      else if (a.t === 'prevCard' && idx > 0) s.setActive(s.cards[idx - 1].id);
-    }
-    if (parsed.ops.length) {
-      const s = useStore.getState();
-      const targets = navFirst.length ? [s.activeId] : preview.targets.map((c) => c.id);
-      const hooks = lookHooks(s.workspace.ruleset);
-      s.commitCards(targets, (d) => void applyOps(d, parsed.ops, hooks));
-    }
-    for (const a of parsed.actions) {
-      const s = useStore.getState();
-      if (a.t === 'ready') s.commit((_, c) => void (c.status = 'ready'), { semantic: false });
-      else if (a.t === 'undo') s.undo();
-      else if (a.t === 'saveLook') s.setModal({ type: 'saveLook', side: a.side, name: a.name });
-    }
-    const n = preview.targets.length;
-    st.toast(n > 1 ? `Applied to ${n} cards. ⌘Z to undo.` : 'Applied. ⌘Z to undo.', 'good');
-    setPreview(null);
+    if (!plan || !plan.lines.length || plan.question) return;
+    plan.apply();
+    const n = plan.targets.length;
+    useStore.getState().toast(n > 1 ? `Applied to ${n} cards. ⌘Z to undo.` : 'Applied. ⌘Z to undo.', 'good');
+    showPlan(null);
     setText('');
-    // Hand the keyboard back to the card so ⌘Z undoes the change.
-    inputRef.current?.blur();
+    inputRef.current?.blur(); // so ⌘Z undoes the change, not the typing
   };
 
+  const cancel = () => {
+    abortRef.current?.abort();
+    setThinking(false);
+    showPlan(null);
+  };
+
+  // ---- Speech: hold to talk ----
+
   const startListening = () => {
-    if (!SpeechCtor) {
-      useStore.getState().toast('Speech isn’t available in this browser. Type the change instead, or use Chrome, Edge or Safari.', 'warn');
+    if (recRef.current) return;
+    if (!speech) {
+      useStore.getState().toast('Speech isn’t available in this browser. Type the change, or use Chrome, Edge or Safari.', 'warn');
       setOpen(true);
+      setTimeout(() => inputRef.current?.focus(), 0);
       return;
     }
     setOpen(true);
-    setPreview(null);
-    const rec = new SpeechCtor();
+    cancel();
+    setText('');
+    const rec = new speech();
     rec.lang = 'en-US';
     rec.interimResults = true;
-    rec.continuous = false;
+    rec.continuous = true; // keep listening while held, through pauses
     let finalText = '';
+    let liveText = '';
     rec.onresult = (e) => {
       let live = '';
       finalText = '';
       for (let i = 0; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) finalText += r[0].transcript;
+        if (r.isFinal) finalText += `${r[0].transcript} `;
         else live += r[0].transcript;
       }
+      liveText = live;
       setInterim(live);
-      setText(finalText);
+      setText(finalText.trim());
     };
     rec.onerror = (e) => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed')
@@ -181,125 +334,208 @@ export function CommandBar() {
       else if (e.error !== 'no-speech' && e.error !== 'aborted') useStore.getState().toast(`Speech stopped (${e.error}). Try again or type it.`, 'warn');
     };
     rec.onend = () => {
+      recRef.current = null;
+      sticky.current = false;
       setListening(false);
       setInterim('');
-      recRef.current = null;
-      if (finalText.trim()) submit(finalText);
+      const all = `${finalText} ${liveText}`.replace(/\s+/g, ' ').trim();
+      setText(all);
+      if (all) void submit(all);
     };
     recRef.current = rec;
+    pressAt.current = Date.now();
     setListening(true);
     rec.start();
   };
-
   const stopListening = () => recRef.current?.stop();
 
-  // M = talk, / = type
+  // Press: start (or stop, if a tap left it listening). Release: stop, unless it was a tap.
+  const press = () => {
+    if (recRef.current && sticky.current) {
+      stopListening();
+      return;
+    }
+    startListening();
+  };
+  const release = () => {
+    if (!recRef.current) return;
+    if (Date.now() - pressAt.current < TAP_MS) sticky.current = true;
+    else stopListening();
+  };
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      if (el.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
+    const typing = (e: KeyboardEvent) => !!(e.target as HTMLElement).closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey;
+    const down = (e: KeyboardEvent) => {
+      if (typing(e)) return;
       if (e.key === 'm' || e.key === 'M') {
         e.preventDefault();
-        if (listening) stopListening();
-        else startListening();
-      } else if (e.key === 'Enter' && preview) {
+        if (!e.repeat) press();
+      } else if (e.key === 'Enter' && plan) {
         e.preventDefault();
         apply();
+      } else if (e.key === 'Escape' && (plan || thinking)) {
+        cancel();
       } else if (e.key === '/') {
         e.preventDefault();
         setOpen(true);
         setTimeout(() => inputRef.current?.focus(), 0);
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'm' || e.key === 'M') release();
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
   });
 
-  // Switching cards drops a stale preview.
-  useEffect(() => setPreview(null), [card.id]);
+  // Switching cards drops a stale preview; leaving clears the canvas preview.
+  const cardId = card.id;
+  useEffect(() => {
+    abortRef.current?.abort();
+    setThinking(false);
+    setPlan(null);
+    setGhost(null);
+  }, [cardId, setGhost]);
 
   if (!open)
     return (
-      <button className="cmd-pill" onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0); }} title="Say or type a change (M to talk, / to type)">
-        <MicIcon /> Say or type a change <kbd>M</kbd>
+      <button
+        className="cmd-pill"
+        onClick={() => {
+          setOpen(true);
+          setTimeout(() => inputRef.current?.focus(), 0);
+        }}
+        title="Say or type a change (hold M to talk, / to type)"
+      >
+        <MicIcon /> Say or type a change <kbd>hold M</kbd>
       </button>
     );
 
+  const canApply = !!plan && plan.lines.length > 0 && !plan.question;
+
   return (
-    <div className="cmd" onPointerDown={(e) => e.stopPropagation()}>
-      {preview && (
+    <div className="cmd" ref={panelRef} onPointerDown={(e) => e.stopPropagation()}>
+      {thinking && (
+        <div className="cmd-preview thinking">
+          <span className="dots">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span className="thinking-text">Working out “{text}”…</span>
+          <button className="link" onClick={cancel}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {plan && (
         <div className="cmd-preview">
           <div className="cmd-heard">
-            “{preview.text}”
+            <span className={`src ${plan.source}`}>{plan.source === 'ai' ? 'AI' : 'Quick'}</span>“{plan.text}”
             <span className="muted">
-              {preview.targets.length > 1 ? ` · ${preview.targets.length} cards: ${preview.targets.map((c) => `#${c.playNo || '—'}`).join(', ')}` : preview.targets.length === 1 ? ` · card #${preview.targets[0].playNo || '—'}` : ''}
+              {plan.targets.length > 1
+                ? ` · ${plan.targets.length} cards: ${plan.targets.map((c) => `#${c.playNo || '—'}`).join(', ')}`
+                : plan.targets.length === 1 && plan.targets[0].id !== card.id
+                  ? ` · card #${plan.targets[0].playNo || '—'}`
+                  : ''}
             </span>
           </div>
-          {preview.lines.length > 0 && (
+          {plan.question && <div className="cmd-question">{plan.question}</div>}
+          {plan.lines.length > 0 && (
             <ul className="cmd-lines">
-              {preview.lines.map((l, i) => (
+              {plan.lines.map((l, i) => (
                 <li key={i}>{l}</li>
               ))}
             </ul>
           )}
-          {preview.problems.map((p, i) => (
-            <div key={`p${i}`} className="cmd-problem">
+          {plan.note && <div className="cmd-problem">{plan.note}</div>}
+          {plan.problems.map((p, i) => (
+            <div key={i} className="cmd-problem">
               {p}
             </div>
           ))}
-          {preview.parsed.unknown.map((u, i) => (
-            <div key={`u${i}`} className="cmd-problem">
-              Didn’t understand “{u}”
-            </div>
-          ))}
           <div className="cmd-actions">
-            <button className="btn" onClick={() => { setText(preview.text); setPreview(null); setTimeout(() => inputRef.current?.focus(), 0); }}>
-              Edit
+            {plan.question ? (
+              <span className="muted small">Answer by holding M or typing below.</span>
+            ) : (
+              <button
+                className="btn"
+                onClick={() => {
+                  setText(plan.text);
+                  showPlan(null);
+                  setTimeout(() => inputRef.current?.focus(), 0);
+                }}
+              >
+                Edit
+              </button>
+            )}
+            <button className="btn" onClick={cancel}>
+              {plan.question ? 'Dismiss' : 'Cancel'}
             </button>
-            <button className="btn" onClick={() => setPreview(null)}>
-              Cancel
-            </button>
-            <button className="btn primary" disabled={!preview.lines.length} onClick={apply}>
-              {preview.problems.length || preview.parsed.unknown.length ? 'Apply what I understood' : 'Apply'} <kbd>↵</kbd>
-            </button>
+            {!plan.question && (
+              <button className="btn primary" disabled={!canApply} onClick={apply}>
+                {plan.problems.length ? 'Apply the rest' : 'Apply'} <kbd>↵</kbd>
+              </button>
+            )}
           </div>
         </div>
       )}
       {help && (
         <div className="cmd-help">
-          <div className="panel-title">Things you can say</div>
+          <div className="panel-title">Talk like you would to an assistant</div>
           <ul>
             {EXAMPLES.map((x) => (
               <li key={x}>
-                <button className="link" onClick={() => { setText(x.split(' · ')[0]); setHelp(false); inputRef.current?.focus(); }}>
+                <button
+                  className="link"
+                  onClick={() => {
+                    setText(x);
+                    setHelp(false);
+                    inputRef.current?.focus();
+                  }}
+                >
                   {x}
                 </button>
               </li>
             ))}
           </ul>
-          <p className="muted small">Names: mike, will, sam, nickel, nose, tackle, end(s), corner(s), free safety, money/dollar, safeties, linebackers — or any label (“the H”). Left/right are as the card prints.</p>
+          <p className="muted small">
+            Left and right are as the card prints. Team terms the app hasn’t seen (like a call name) get a question back instead of a guess — save the look first and it’ll know it.
+          </p>
         </div>
       )}
       <div className={`cmd-bar${listening ? ' listening' : ''}`}>
-        <button className={`cmd-mic${listening ? ' on' : ''}`} onClick={listening ? stopListening : startListening} title={SpeechCtor ? (listening ? 'Stop (M)' : 'Talk (M)') : 'Speech not available in this browser'}>
+        <button
+          className={`cmd-mic${listening ? ' on' : ''}`}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            press();
+          }}
+          onPointerUp={release}
+          title={speech ? 'Hold to talk (or hold M). Tap to keep listening.' : 'Speech isn’t available in this browser'}
+        >
           <MicIcon />
         </button>
         <input
           ref={inputRef}
           value={listening ? `${text}${interim ? (text ? ' ' : '') + interim : ''}` : text}
-          placeholder={listening ? 'Listening…' : 'e.g. “corners at 7, mike rush the A gap”'}
+          placeholder={listening ? 'Listening… release to stop' : 'Hold M and talk, or type: “corners press, bail at the snap”'}
           onChange={(e) => {
             setText(e.target.value);
-            setPreview(null);
+            if (plan) showPlan(null);
           }}
           onKeyDown={(e) => {
             e.stopPropagation();
             if (e.key === 'Enter') {
-              if (preview && preview.text === text.trim()) apply();
-              else submit();
+              if (plan && plan.text === text.trim() && canApply) apply();
+              else void submit();
             }
             if (e.key === 'Escape') {
-              if (preview) setPreview(null);
+              if (plan || thinking) cancel();
               else setOpen(false);
             }
           }}
@@ -308,7 +544,15 @@ export function CommandBar() {
         <button className="mini" onClick={() => setHelp(!help)} title="Examples">
           ?
         </button>
-        <button className="mini" onClick={() => { stopListening(); setOpen(false); setPreview(null); }} title="Close (Esc)">
+        <button
+          className="mini"
+          onClick={() => {
+            stopListening();
+            cancel();
+            setOpen(false);
+          }}
+          title="Close (Esc)"
+        >
           ✕
         </button>
       </div>
