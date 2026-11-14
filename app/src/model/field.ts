@@ -4,16 +4,33 @@ import type { Hash, Pt, Ruleset } from './types';
 export const CARD_W = 1100;
 export const CARD_H = 850;
 
-export const FIELD = { x: 40, y: 150, w: 1020, h: 662 };
-
 export const FIELD_WIDTH_YD = 160 / 3; // 53 1/3 yards
-export const VIEW_TOP_YD = -7; // offensive backfield shown
-export const VIEW_BOTTOM_YD = 12; // defensive depth shown
 
-// Cards compress the field laterally (as hand-drawn cards do) so the depth
-// that matters stays readable. Horizontal and vertical scales differ.
-export const SX = FIELD.w / FIELD_WIDTH_YD;
-export const SY = FIELD.h / (VIEW_BOTTOM_YD - VIEW_TOP_YD);
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Where the field sits on the page and how much depth it shows. Cards compress
+// the field laterally (as hand-drawn cards do) so the depth that matters stays
+// readable: horizontal and vertical scales differ. Both layouts share the same
+// lateral scale, so splits look the same on scout and install cards.
+export interface Layout {
+  field: Rect;
+  top: number; // yards shown into the offensive backfield (negative)
+  bottom: number; // yards of defensive depth shown
+}
+
+export const SCOUT_LAYOUT: Layout = { field: { x: 40, y: 150, w: 1020, h: 662 }, top: -7, bottom: 12 };
+// Install cards give up some depth for a teaching panel under the field.
+export const INSTALL_LAYOUT: Layout = { field: { x: 40, y: 150, w: 1020, h: 452 }, top: -7, bottom: 12 };
+export const TEACHING_PANEL: Rect = { x: 40, y: 618, w: 1020, h: 194 };
+
+export const FIELD = SCOUT_LAYOUT.field;
+
+export const layoutFor = (card: { mode?: 'scout' | 'install' }) => (card.mode === 'install' ? INSTALL_LAYOUT : SCOUT_LAYOUT);
 
 // Distance from the middle of the field to each hash, in yards.
 const HASH_OFFSET: Record<Ruleset, number> = {
@@ -41,24 +58,33 @@ export function ballOffset(hash: Hash, ruleset: Ruleset) {
 
 export interface Frame {
   ball: number; // ball offset from field center (yd)
+  layout: Layout;
+  field: Rect;
   toX: (x: number) => number;
   toY: (y: number) => number;
   fromX: (cx: number) => number;
   fromY: (cy: number) => number;
   to: (p: Pt) => Pt;
+  hashX: (side: -1 | 1) => number; // page x of a hash column
 }
 
-export function makeFrame(hash: Hash, ruleset: Ruleset): Frame {
+export function makeFrame(hash: Hash, ruleset: Ruleset, layout: Layout = SCOUT_LAYOUT): Frame {
   const ball = ballOffset(hash, ruleset);
-  const toX = (x: number) => FIELD.x + (FIELD_WIDTH_YD / 2 + ball + x) * SX;
-  const toY = (y: number) => FIELD.y + (y - VIEW_TOP_YD) * SY;
+  const F = layout.field;
+  const sx = F.w / FIELD_WIDTH_YD;
+  const sy = F.h / (layout.bottom - layout.top);
+  const toX = (x: number) => F.x + (FIELD_WIDTH_YD / 2 + ball + x) * sx;
+  const toY = (y: number) => F.y + (y - layout.top) * sy;
   return {
     ball,
+    layout,
+    field: F,
     toX,
     toY,
-    fromX: (cx) => (cx - FIELD.x) / SX - FIELD_WIDTH_YD / 2 - ball,
-    fromY: (cy) => (cy - FIELD.y) / SY + VIEW_TOP_YD,
+    fromX: (cx) => (cx - F.x) / sx - FIELD_WIDTH_YD / 2 - ball,
+    fromY: (cy) => (cy - F.y) / sy + layout.top,
     to: (p) => ({ x: toX(p.x), y: toY(p.y) }),
+    hashX: (side) => F.x + F.w / 2 + side * HASH_OFFSET[ruleset] * sx,
   };
 }
 

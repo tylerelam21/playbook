@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { activeCard, PATH_PRESETS, useStore } from '../store';
 import { CardSvg } from '../render/CardSvg';
 import { THEMES } from '../render/themes';
-import { CARD_H, CARD_W, FIELD, describeSpot, fieldLimits, makeFrame, snap } from '../model/field';
+import { CARD_H, CARD_W, describeSpot, fieldLimits, layoutFor, makeFrame, snap } from '../model/field';
+import { layoutTeaching } from '../render/teachingLayout';
 import { id } from '../model/samples';
 import type { Card, Pt } from '../model/types';
 import { buildPath } from '../render/pathGeom';
@@ -36,7 +37,12 @@ export function Editor() {
   const card = useStore(activeCard);
   const { workspace, selection, tool, preset, layers, zoom } = useStore();
   const theme = THEMES[workspace.theme];
-  const frame = useMemo(() => makeFrame(card.hash, workspace.ruleset), [card.hash, workspace.ruleset]);
+  const frame = useMemo(() => makeFrame(card.hash, workspace.ruleset, layoutFor(card)), [card.hash, workspace.ruleset, card.mode]);
+  const FIELD = frame.field;
+  // Install cards whose notes overflow print extra pages; preview them here.
+  const totalPages = useMemo(() => layoutTeaching(card).totalPages, [card]);
+  const [pageSel, setPage] = useState(0);
+  const page = pageSel < totalPages ? pageSel : 0;
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -70,6 +76,7 @@ export function Editor() {
   }, [tool, card.id]);
   useEffect(() => {
     setInline(null);
+    setPage(0);
   }, [card.id]);
 
   const toCardUnits = (e: { clientX: number; clientY: number }): Pt => {
@@ -553,6 +560,23 @@ export function Editor() {
 
   return (
     <div className={`editor tool-${tool}`} ref={wrapRef}>
+      {totalPages > 1 && (
+        <div className="page-tabs">
+          {Array.from({ length: totalPages }, (_, i) => (
+            <button key={i} className={page === i ? 'on' : ''} onClick={() => setPage(i)}>
+              {i === 0 ? 'Card' : `Page ${i + 1} · continued`}
+            </button>
+          ))}
+        </div>
+      )}
+      {page > 0 ? (
+        <div className="stage" style={{ width: CARD_W * scale, height: CARD_H * scale }}>
+          <div className="paper-shadow" />
+          <div className="svg-host">
+            <CardSvg card={card} theme={theme} ruleset={workspace.ruleset} page={page} />
+          </div>
+        </div>
+      ) : (
       <div className="stage" style={{ width: CARD_W * scale, height: CARD_H * scale }}>
         <div className="paper-shadow" />
         <div
@@ -626,7 +650,8 @@ export function Editor() {
           )}
         </div>
       </div>
-      <div className="hint">{hint}</div>
+      )}
+      <div className="hint">{page > 0 ? 'Notes that don’t fit on the card continue here at the same size. Edit them in the Card panel.' : hint}</div>
     </div>
   );
 }

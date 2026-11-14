@@ -251,6 +251,10 @@ export const useStore = create<State>((set, get) => {
         players,
         paths: src.paths.map((p) => ({ ...structuredClone(p), id: id(), ownerId: p.ownerId ? map.get(p.ownerId) ?? null : null })),
         notes: src.notes.map((n) => ({ ...n, id: id(), anchorId: n.anchorId ? map.get(n.anchorId) ?? null : null })),
+        teaching: src.teaching && {
+          cues: src.teaching.cues,
+          assignments: src.teaching.assignments.map((a) => ({ ...a, id: id(), playerId: a.playerId ? map.get(a.playerId) ?? null : null })),
+        },
       };
       get().addCard(cardId, copy);
       get().toast(`Duplicated card ${src.playNo || ''}`.trim(), 'good');

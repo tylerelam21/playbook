@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { Card, Note, PlayPath, Player, Ruleset, Side } from '../model/types';
-import { CARD_H, CARD_W, FIELD, VIEW_BOTTOM_YD, VIEW_TOP_YD, hashOffset, makeFrame, type Frame } from '../model/field';
+import { CARD_H, CARD_W, TEACHING_PANEL, layoutFor, makeFrame, type Frame, type Rect } from '../model/field';
+import { BULLET_GUTTER, COL_GAP, CONT_BOX, HEAD_SIZE, LABEL_GUTTER, LINE_H, PAD, TEXT_SIZE, colWidth, layoutTeaching, type TeachingPage } from './teachingLayout';
 import { arrowHead, buildPath, teeBar } from './pathGeom';
 import type { Theme } from './themes';
 
@@ -16,6 +17,7 @@ export interface CardSvgProps {
   watermark?: string;
   footer?: string;
   bare?: boolean; // field only, no header (look thumbnails)
+  page?: number; // install cards: 0 = the card, 1+ = continuation pages
   className?: string;
   svgRef?: React.Ref<SVGSVGElement>;
 }
@@ -114,6 +116,14 @@ function PlayerMark({ p, f, theme, selected, interactive }: { p: Player; f: Fram
       )}
       {body}
       {labelEl}
+      {p.read ? (
+        <g>
+          <circle cx={cx + 21} cy={cy - 20} r={10.5} fill={theme.paper} stroke={theme.ink.ink} strokeWidth={2} />
+          <text x={cx + 21} y={cy - 20 + 5} textAnchor="middle" fontFamily={FONT} fontWeight="bold" fontSize={14} fill={theme.ink.ink}>
+            {p.read}
+          </text>
+        </g>
+      ) : null}
     </g>
   );
 }
@@ -209,19 +219,19 @@ function NoteMark({ n, f, theme, selected, interactive }: { n: Note; f: Frame; t
   );
 }
 
-function Field({ f, theme, ruleset }: { f: Frame; theme: Theme; ruleset: Ruleset }) {
-  const h = hashOffset(ruleset);
+function Field({ f, theme }: { f: Frame; theme: Theme }) {
+  const F = f.field;
   const ticks: React.ReactNode[] = [];
-  for (let yd = VIEW_TOP_YD + 1; yd < VIEW_BOTTOM_YD; yd++) {
-    const y = f.toY(yd) + 0.0;
-    for (const side of [-1, 1]) {
-      const cx = FIELD.x + FIELD.w / 2 + side * h * (FIELD.w / (160 / 3));
+  for (let yd = f.layout.top + 1; yd < f.layout.bottom; yd++) {
+    const y = f.toY(yd);
+    for (const side of [-1, 1] as const) {
+      const cx = f.hashX(side);
       ticks.push(<line key={`${yd}${side}`} x1={cx - 15} x2={cx + 15} y1={y} y2={y} stroke={theme.hash} strokeWidth={2.4} />);
     }
   }
   return (
     <g>
-      <rect x={FIELD.x} y={FIELD.y} width={FIELD.w} height={FIELD.h} fill="none" stroke={theme.frame} strokeWidth={4} />
+      <rect x={F.x} y={F.y} width={F.w} height={F.h} fill="none" stroke={theme.frame} strokeWidth={4} />
       {ticks}
     </g>
   );
@@ -257,8 +267,82 @@ function Header({ card, theme }: { card: Card; theme: Theme }) {
   );
 }
 
-function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = [], hidden = {}, watermark, footer, bare, className, svgRef }: CardSvgProps) {
-  const f = makeFrame(card.hash, ruleset);
+// Teaching notes laid out in columns inside a box (the panel under the field,
+// or a whole continuation page). Font size is fixed; see teachingLayout.ts.
+function TeachingBox({ box, page, theme, more }: { box: Rect; page: TeachingPage | undefined; theme: Theme; more: string | null }) {
+  const colW = colWidth(box.w);
+  return (
+    <g>
+      <rect x={box.x} y={box.y} width={box.w} height={box.h} fill="none" stroke={theme.frame} strokeWidth={2.5} />
+      {page?.columns.map((col, ci) => {
+        const x = box.x + PAD + ci * (colW + COL_GAP);
+        return col.map(({ line, y }, li) => {
+          const top = box.y + PAD + y;
+          if (line.kind === 'heading')
+            return (
+              <text key={`${ci}-${li}`} x={x} y={top + 16} fontFamily={FONT} fontWeight="bold" fontSize={HEAD_SIZE} letterSpacing={1} fill={theme.headerMuted}>
+                {line.text}
+              </text>
+            );
+          const base = top + LINE_H - 5;
+          if (line.kind === 'bullet')
+            return (
+              <g key={`${ci}-${li}`}>
+                {line.first && <circle cx={x + 4} cy={base - 5} r={2.6} fill={theme.header} />}
+                <text x={x + BULLET_GUTTER} y={base} fontFamily={FONT} fontWeight="normal" fontSize={TEXT_SIZE} fill={theme.header}>
+                  {line.text}
+                </text>
+              </g>
+            );
+          const labelColor = line.ink ? theme.ink[line.ink] : line.side === 'D' ? theme.defense : theme.header;
+          return (
+            <g key={`${ci}-${li}`}>
+              {line.label !== null && (
+                <text x={x} y={base} fontFamily={FONT} fontWeight="bold" fontSize={TEXT_SIZE + 2} fill={line.orphan ? '#d93a4a' : labelColor}>
+                  {line.label}
+                </text>
+              )}
+              <text x={x + LABEL_GUTTER} y={base} fontFamily={FONT} fontWeight="normal" fontSize={TEXT_SIZE} fill={theme.header}>
+                {line.text}
+              </text>
+            </g>
+          );
+        });
+      })}
+      {more && (
+        <text x={box.x + box.w - PAD} y={box.y + box.h - 5} textAnchor="end" fontFamily={FONT} fontWeight="bold" fontSize={12} fill={theme.headerMuted}>
+          {more}
+        </text>
+      )}
+    </g>
+  );
+}
+
+function ContinuationPage({ card, theme, page, index, total }: { card: Card; theme: Theme; page: TeachingPage | undefined; index: number; total: number }) {
+  return (
+    <g>
+      <text x={50} y={70} fontFamily={FONT} fontWeight="bold" fontSize={19} fill={theme.headerMuted}>
+        PLAY #{card.playNo || '—'} · CONTINUED
+      </text>
+      <text x={1050} y={70} textAnchor="end" fontFamily={FONT} fontWeight="bold" fontSize={19} fill={theme.headerMuted}>
+        PAGE {index + 1} OF {total}
+      </text>
+      <text x={50} y={118} fontFamily={FONT} fontWeight="normal" fontSize={fitSize(card.play, 700, 30)} fill={theme.header}>
+        {card.play}
+      </text>
+      <text x={1050} y={118} textAnchor="end" fontFamily={FONT} fontWeight="normal" fontSize={fitSize(card.defense, 280, 30)} fill={theme.header}>
+        {card.defense}
+      </text>
+      <TeachingBox box={CONT_BOX} page={page} theme={theme} more={index + 1 < total ? `Continued on page ${index + 2}` : null} />
+    </g>
+  );
+}
+
+function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = [], hidden = {}, watermark, footer, bare, page = 0, className, svgRef }: CardSvgProps) {
+  const layout = layoutFor(card);
+  const f = makeFrame(card.hash, ruleset, layout);
+  const F = layout.field;
+  const teaching = card.mode === 'install' && !bare ? layoutTeaching(card) : null;
   const byId = new Map(card.players.map((p) => [p.id, p]));
   const sel = new Set(selection);
   const visiblePlayers = card.players.filter((p) => !hidden[p.side]);
@@ -266,28 +350,46 @@ function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = []
     const o = p.ownerId ? byId.get(p.ownerId) : undefined;
     return !o || !hidden[o.side];
   });
+  const viewBox = bare ? `${F.x - 4} ${F.y - 4} ${F.w + 8} ${F.h + 8}` : `0 0 ${CARD_W} ${CARD_H}`;
+  const extras = (
+    <>
+      {watermark && (
+        <text x={CARD_W - 60} y={F.y + 50} textAnchor="end" fontFamily={FONT} fontWeight="bold" fontSize={34} letterSpacing={6} fill="#d93a4a" opacity={0.55}>
+          {watermark}
+        </text>
+      )}
+      {footer && (
+        <text x={CARD_W - 40} y={CARD_H - 14} textAnchor="end" fontFamily={FONT} fontSize={11} fill={theme.headerMuted} opacity={0.6}>
+          {footer}
+          {teaching && teaching.totalPages > 1 ? ` · page ${page + 1}/${teaching.totalPages}` : ''}
+        </text>
+      )}
+    </>
+  );
+
+  if (teaching && page > 0) {
+    return (
+      <svg ref={svgRef} className={className} viewBox={viewBox} width={CARD_W} height={CARD_H} xmlns="http://www.w3.org/2000/svg">
+        <rect x={0} y={0} width={CARD_W} height={CARD_H} fill={theme.paper} />
+        <ContinuationPage card={card} theme={theme} page={teaching.pages[page]} index={page} total={teaching.totalPages} />
+        {extras}
+      </svg>
+    );
+  }
 
   return (
     <svg
       ref={svgRef}
       className={className}
-      viewBox={bare ? `${FIELD.x - 4} ${FIELD.y - 4} ${FIELD.w + 8} ${FIELD.h + 8}` : `0 0 ${CARD_W} ${CARD_H}`}
-      width={bare ? FIELD.w + 8 : CARD_W}
-      height={bare ? FIELD.h + 8 : CARD_H}
+      viewBox={viewBox}
+      width={bare ? F.w + 8 : CARD_W}
+      height={bare ? F.h + 8 : CARD_H}
       xmlns="http://www.w3.org/2000/svg"
     >
       <rect x={0} y={0} width={CARD_W} height={CARD_H} fill={theme.paper} data-kind={interactive ? 'paper' : undefined} />
       {!bare && <Header card={card} theme={theme} />}
-      <Field f={f} theme={theme} ruleset={ruleset} />
-      {interactive && (
-        <line
-          x1={FIELD.x}
-          x2={FIELD.x + FIELD.w}
-          y1={f.toY(0)}
-          y2={f.toY(0)}
-          className="los"
-        />
-      )}
+      <Field f={f} theme={theme} />
+      {interactive && <line x1={F.x} x2={F.x + F.w} y1={f.toY(0)} y2={f.toY(0)} className="los" />}
       {visiblePaths.map((p) => (
         <PathMark
           key={p.id}
@@ -305,26 +407,20 @@ function CardSvgImpl({ card, theme, ruleset, interactive = false, selection = []
       {card.notes.map((n) => (
         <NoteMark key={n.id} n={n} f={f} theme={theme} selected={sel.has(n.id)} interactive={interactive} />
       ))}
-      {watermark && (
-        <text
-          x={CARD_W - 60}
-          y={FIELD.y + 50}
-          textAnchor="end"
-          fontFamily={FONT}
-          fontWeight="bold"
-          fontSize={34}
-          letterSpacing={6}
-          fill="#d93a4a"
-          opacity={0.55}
-        >
-          {watermark}
+      {teaching && (
+        <TeachingBox
+          box={TEACHING_PANEL}
+          page={teaching.pages[0]}
+          theme={theme}
+          more={teaching.totalPages > 1 ? 'Continued on page 2' : null}
+        />
+      )}
+      {teaching?.empty && (
+        <text x={TEACHING_PANEL.x + TEACHING_PANEL.w / 2} y={TEACHING_PANEL.y + TEACHING_PANEL.h / 2 + 5} textAnchor="middle" fontFamily={FONT} fontSize={15} fill={theme.headerMuted} opacity={0.6}>
+          {interactive ? 'Add assignments and coaching points in the Card panel →' : ''}
         </text>
       )}
-      {footer && (
-        <text x={CARD_W - 40} y={CARD_H - 14} textAnchor="end" fontFamily={FONT} fontSize={11} fill={theme.headerMuted} opacity={0.6}>
-          {footer}
-        </text>
-      )}
+      {extras}
     </svg>
   );
 }
